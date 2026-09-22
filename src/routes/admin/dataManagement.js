@@ -105,6 +105,7 @@ router.get('/export-candidates.csv', (req, res) => {
 router.get('/export-results.csv', (req, res) => {
   const rows = db.prepare(
     `SELECT c.code, c.full_name, c.is_demo, s.id AS assessment_id, s.started_at, s.submitted_at, s.status,
+            s.submission_type, s.submission_reason, s.answered_count, s.unanswered_count,
             s.google_sync_status, sc.calc_marks, sc.calc_max, sc.essay_marks, sc.essay_max,
             sc.interview_marks, sc.interview_max, sc.final_marks, sc.percentage, sc.pass,
             ia.risk_level
@@ -117,11 +118,15 @@ router.get('/export-results.csv', (req, res) => {
   const passThreshold = db.prepare('SELECT pass_threshold AS t FROM settings WHERE id = 1').get().t;
   const out = [[
     'Candidate ID', 'Candidate Name', 'Assessment ID', 'Started At', 'Submitted At', 'Session Status',
+    'Submission Reason', 'Answered', 'Unanswered',
     'Calculation', 'Written', 'Interview', 'Final Score', 'Percentage', 'Pass Threshold', 'Pass/Fail',
     'Integrity Risk Level', 'Google Sync', 'Demo Record',
   ]];
   rows.forEach((r) => out.push([
-    r.code, r.full_name, r.assessment_id, r.started_at, r.submitted_at, r.status,
+    r.code, r.full_name, r.assessment_id, r.started_at, r.submitted_at,
+    r.status === 'SUBMITTED' && r.submission_type === 'AUTO_SUBMITTED' ? 'AUTO_SUBMITTED' : r.status,
+    r.submission_reason || '', r.answered_count == null ? '' : r.answered_count,
+    r.unanswered_count == null ? '' : r.unanswered_count,
     r.calc_marks == null ? '' : `${r.calc_marks}/${r.calc_max}`,
     r.essay_marks == null ? '' : `${r.essay_marks}/${r.essay_max}`,
     r.interview_marks == null ? '' : `${r.interview_marks}/${r.interview_max}`,

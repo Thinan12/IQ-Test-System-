@@ -5,6 +5,7 @@ const { evaluateEligibility } = require('../../lib/eligibility');
 const { gradeAllCalc } = require('../../lib/grading');
 const { auditFromReq } = require('../../lib/audit');
 const { requireAuth, requireRole } = require('../../middleware/auth');
+const { displayStatus } = require('../../lib/finalize');
 const { nextCandidateCode } = require('../../lib/dataManagement');
 
 const router = express.Router();
@@ -145,7 +146,7 @@ router.get('/:id', (req, res) => {
       branch: lookupName('branches', c.branch_id),
     },
     eligibility: elig,
-    session,
+    session: decorateSession(session),
     links,
     scores,
     integrity,
@@ -242,6 +243,28 @@ router.post('/:id/interview-score', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'INTE
   auditFromReq(req, 'Interview scored', c.code, null, total);
   res.json({ ok: true, marks: total });
 });
+
+// Adds the submission record HR needs: how the assessment ended, the scheduled
+// versus actual end, how long it really took, and answered/unanswered counts.
+function decorateSession(session) {
+  if (!session) return null;
+  let durationLabel = null;
+  if (session.started_at && session.submitted_at) {
+    const minutes = (new Date(session.submitted_at) - new Date(session.started_at)) / 60000;
+    durationLabel = `${Math.round(minutes * 10) / 10} min of ${session.duration_minutes} min allowed`;
+  }
+  return {
+    ...session,
+    displayStatus: displayStatus(session),
+    submissionType: session.submission_type || null,
+    submissionReason: session.submission_reason || null,
+    scheduledEndAt: session.expires_at,
+    actualEndAt: session.submitted_at,
+    durationLabel,
+    answeredCount: session.answered_count,
+    unansweredCount: session.unanswered_count,
+  };
+}
 
 function upsertScoreField(sessionId, fields) {
   const existing = db.prepare('SELECT id FROM scores WHERE session_id = ?').get(sessionId);

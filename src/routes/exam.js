@@ -1,8 +1,7 @@
 const express = require('express');
 const db = require('../db');
 const { generateId } = require('../lib/tokens');
-const { gradeAllCalc } = require('../lib/grading');
-const { syncSessionInBackground, isAutoSyncEnabled } = require('../lib/googleSheets');
+const { finalizeSession, finalizeIfExpired, isExpired, displayStatus } = require('../lib/finalize');
 const { examLimiter } = require('../middleware/auth');
 const { audit } = require('../lib/audit');
 
@@ -57,10 +56,16 @@ function existingSessionForLink(link) {
 router.get('/:token', (req, res) => {
   const link = getLinkByToken(req.params.token);
   if (!link) { return res.status(404).json({ error: 'This link is not valid.' }); }
-  const session = existingSessionForLink(link);
+  let session = existingSessionForLink(link);
   // Once a session exists, the LINK's own expiry no longer governs access — only the session's own duration does.
   if (session) {
     logAccess(link.id, true, req);
+    // Reopening the link after the deadline finalizes it, so the candidate sees
+    // the TIME EXPIRED screen rather than a live exam.
+    if (session.status === 'IN_PROGRESS' && isExpired(session)) {
+      finalizeIfExpired(session, { ip: req.ip });
+      session = existingSessionForLink(link);
+    }
     return respondWithCandidateContext(req, res, link, session);
   }
   const status = liveLinkStatus(link);
@@ -86,7 +91,20 @@ function respondWithCandidateContext(req, res, link, session) {
     questionCount: calcCount + essayCount,
     durationMinutes: s.assessment_duration_minutes,
     verification: { requireCandidateId: !!s.require_candidate_id, requirePhone: !!s.require_phone, requireDob: !!s.require_dob },
-    session: session ? { status: session.status, startedAt: session.started_at, expiresAt: session.expires_at, submittedAt: session.submitted_at } : null,
+    session: session ? {
+      // `status` is what the candidate's portal keys off: SUBMITTED for a manual
+      // submission, AUTO_SUBMITTED when the server finalized it on time expiry.
+      status: displayStatus(session),
+      lifecycleStatus: session.status,
+      reason: session.submission_reason || null,
+      autoSubmitted: session.submission_type === 'AUTO_SUBMITTED',
+      startedAt: session.started_at,
+      scheduledEndAt: session.expires_at,
+      expiresAt: session.expires_at,
+      submittedAt: session.submitted_at,
+      answered: session.answered_count,
+      unanswered: session.unanswered_count,
+    } : null,
   });
 }
 
@@ -97,8 +115,21 @@ router.post('/:token/start', (req, res) => {
   const c = db.prepare('SELECT * FROM candidates WHERE id = ?').get(link.candidate_id);
   let session = existingSessionForLink(link);
   if (session) {
-    if (session.status === 'SUBMITTED') return res.status(409).json({ error: 'This assessment has already been submitted and cannot be restarted.' });
-    return res.json({ started: true, expiresAt: session.expires_at });
+    if (session.status === 'IN_PROGRESS' && isExpired(session)) {
+      finalizeIfExpired(session, { ip: req.ip });
+      session = existingSessionForLink(link);
+    }
+    if (session.status === 'SUBMITTED') {
+      return res.status(409).json({
+        error: session.submission_type === 'AUTO_SUBMITTED'
+          ? 'Your assessment time has ended. Your saved answers have been submitted automatically.'
+          : 'This assessment has already been submitted and cannot be restarted.',
+        status: displayStatus(session),
+        reason: session.submission_reason || null,
+        submittedAt: session.submitted_at,
+      });
+    }
+    return res.json({ started: true, expiresAt: session.expires_at, scheduledEndAt: session.expires_at });
   }
   const status = liveLinkStatus(link);
   if (status !== 'ACTIVE') return res.status(410).json({ error: 'This assessment invitation has expired.' });
@@ -125,17 +156,44 @@ router.post('/:token/start', (req, res) => {
   db.prepare(`UPDATE assessment_links SET status='USED' WHERE id=?`).run(link.id);
   db.prepare(`UPDATE candidates SET status='ASSESSMENT_STARTED' WHERE id=?`).run(c.id);
   audit({ userName: 'Candidate (public exam)', role: 'CANDIDATE', action: 'Assessment started', target: c.code, ip: req.ip });
-  res.json({ started: true, expiresAt });
+  res.json({ started: true, expiresAt, scheduledEndAt: expiresAt });
 }
 );
 
+// Every candidate-facing request re-checks token validity, session ownership,
+// session state and the SERVER clock against scheduled_end_at. If the deadline
+// has passed, the assessment is finalized here and now — the candidate is never
+// asked to press anything for that to happen.
 function requireActiveSession(req, res, next) {
   const link = getLinkByToken(req.params.token);
   if (!link) return res.status(404).json({ error: 'This link is not valid.' });
   const session = existingSessionForLink(link);
   if (!session) return res.status(400).json({ error: 'Assessment has not been started yet.' });
-  if (session.status === 'SUBMITTED') return res.status(409).json({ error: 'This assessment has already been submitted.' });
-  if (new Date(session.expires_at) < new Date()) return res.status(410).json({ error: 'Your assessment time has expired. Please submit now; unanswered questions will be recorded as skipped.', timeExpired: true });
+
+  if (session.status === 'IN_PROGRESS' && isExpired(session)) {
+    const result = finalizeIfExpired(session, { ip: req.ip });
+    const counts = (result && result.counts) || {};
+    return res.status(410).json({
+      error: 'Your assessment time has ended. Your saved answers have been submitted automatically.',
+      timeExpired: true,
+      autoSubmitted: true,
+      status: 'AUTO_SUBMITTED',
+      reason: 'TIME_EXPIRED',
+      submittedAt: result ? result.submittedAt : session.submitted_at,
+      answered: counts.answered,
+      unanswered: counts.unanswered,
+    });
+  }
+
+  if (session.status === 'SUBMITTED') {
+    return res.status(409).json({
+      error: 'This assessment has already been submitted.',
+      status: displayStatus(session),
+      reason: session.submission_reason || null,
+      submittedAt: session.submitted_at,
+    });
+  }
+
   req.link = link; req.session_ = session; req.candidate = db.prepare('SELECT * FROM candidates WHERE id = ?').get(link.candidate_id);
   next();
 }
@@ -198,58 +256,52 @@ router.post('/:token/event', requireActiveSession, (req, res) => {
 });
 
 // ---- Submit ----
-router.post('/:token/submit', requireActiveSession, (req, res) => {
-  const session = req.session_, candidate = req.candidate;
-  const questions = db.prepare('SELECT * FROM questions WHERE active = 1').all().map((q) => ({ ...q, config: JSON.parse(q.config_json) }));
-  const answers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(session.id);
-  const answersByQ = {}; answers.forEach((a) => { answersByQ[a.question_id] = a; });
+// Used both by the candidate pressing Submit and by the client's countdown
+// reaching zero (which sends ?auto=1). Either way the server decides what the
+// submission actually is: if the deadline has already passed it is recorded as
+// AUTO_SUBMITTED / TIME_EXPIRED regardless of what the browser claims.
+router.post('/:token/submit', (req, res) => {
+  const link = getLinkByToken(req.params.token);
+  if (!link) return res.status(404).json({ error: 'This link is not valid.' });
+  const session = existingSessionForLink(link);
+  if (!session) return res.status(400).json({ error: 'Assessment has not been started yet.' });
 
-  const calcResult = gradeAllCalc(questions, answersByQ);
+  if (session.status === 'SUBMITTED') {
+    // Idempotent: a retry, a double tap, or a client auto-submit racing the
+    // server sweep all land here and change nothing.
+    return res.status(409).json({
+      error: 'This assessment has already been submitted.',
+      alreadySubmitted: true,
+      status: displayStatus(session),
+      reason: session.submission_reason || null,
+      submittedAt: session.submitted_at,
+      answered: session.answered_count,
+      unanswered: session.unanswered_count,
+    });
+  }
 
-  // Integrity risk from raw events collected during the session.
-  const events = db.prepare('SELECT * FROM answer_events WHERE session_id = ?').all(session.id);
-  const pasteEvents = events.filter((e) => e.type === 'PASTE');
-  const focusChanges = events.filter((e) => e.type === 'FOCUS_CHANGE' || e.type === 'VISIBILITY_CHANGE').length;
-  const largestPaste = pasteEvents.reduce((m, e) => Math.max(m, (JSON.parse(e.meta_json || '{}').length || 0)), 0);
-  const evidence = [];
-  if (largestPaste > 0) evidence.push(`Large text insertion detected. Candidate pasted ${largestPaste} characters into an answer field.`);
-  if (focusChanges > 0) evidence.push(`Candidate changed browser focus ${focusChanges} times during the assessment.`);
-  let risk = 'Low';
-  if (largestPaste >= 500 || pasteEvents.length >= 3) risk = 'High';
-  else if (largestPaste > 0 || pasteEvents.length >= 1 || focusChanges >= 5) risk = 'Medium';
+  const expired = isExpired(session);
+  const result = finalizeSession(session.id, { auto: expired, ip: req.ip });
 
-  const now = new Date().toISOString();
+  if (!result.finalized && result.alreadyFinalized) {
+    return res.status(409).json({
+      error: 'This assessment has already been submitted.',
+      alreadySubmitted: true,
+      status: displayStatus(result.session),
+      reason: result.session.submission_reason || null,
+      submittedAt: result.session.submitted_at,
+    });
+  }
 
-  // Everything that makes the submission real happens in ONE transaction:
-  // the session lock, the marks and the integrity record either all land in
-  // SQLite or none of them do. Google Sheets is deliberately outside it.
-  const commitSubmission = db.transaction(() => {
-    db.prepare(
-      `UPDATE assessment_sessions SET submitted_at = ?, status = 'SUBMITTED', google_sync_status = ? WHERE id = ?`
-    ).run(now, isAutoSyncEnabled() ? 'PENDING' : 'NOT_REQUESTED', session.id);
-    db.prepare(`UPDATE candidates SET status = 'INTERVIEW_PENDING' WHERE id = ?`).run(candidate.id);
-
-    db.prepare(
-      `INSERT INTO scores (id, session_id, calc_marks, calc_max, calc_breakdown_json) VALUES (?,?,?,?,?)
-       ON CONFLICT(session_id) DO UPDATE SET calc_marks=excluded.calc_marks, calc_max=excluded.calc_max, calc_breakdown_json=excluded.calc_breakdown_json`
-    ).run(generateId('score'), session.id, calcResult.marks, calcResult.max, JSON.stringify(calcResult.breakdown));
-
-    db.prepare(
-      `INSERT INTO integrity_assessments (id, session_id, paste_events, focus_changes, largest_paste, risk_level, evidence_json)
-       VALUES (?,?,?,?,?,?,?)
-       ON CONFLICT(session_id) DO UPDATE SET paste_events=excluded.paste_events, focus_changes=excluded.focus_changes, largest_paste=excluded.largest_paste, risk_level=excluded.risk_level, evidence_json=excluded.evidence_json`
-    ).run(generateId('integ'), session.id, pasteEvents.length, focusChanges, largestPaste, risk, JSON.stringify(evidence));
+  res.json({
+    ok: true,
+    submittedAt: result.submittedAt,
+    status: displayStatus(result.session),
+    reason: result.session.submission_reason,
+    autoSubmitted: expired,
+    answered: result.counts ? result.counts.answered : null,
+    unanswered: result.counts ? result.counts.unanswered : null,
   });
-  commitSubmission();
-
-  audit({ userName: 'Candidate (public exam)', role: 'CANDIDATE', action: 'Assessment submitted', target: candidate.code, ip: req.ip });
-
-  // The result is already safe in SQLite. Reporting to Google Sheets happens
-  // after the response, never blocks the candidate, and leaves the session at
-  // google_sync_status='PENDING' if Google is unreachable so an administrator
-  // can retry. The candidate is never shown a storage or sync error.
-  res.json({ ok: true, submittedAt: now });
-  syncSessionInBackground(session.id);
 });
 
 module.exports = router;

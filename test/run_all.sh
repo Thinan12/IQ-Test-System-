@@ -9,7 +9,9 @@ export NODE="${NODE:-node}"
 
 SUITES=(
   "e2e_test.sh:Core assessment workflow (regression, section 22)"
-  "test/security_check.sh:Security verification (section 18)"
+  "test/security_check.sh:Security verification (section 16)"
+  "test/auto_submit.sh:Auto-submit on time expiry (sections 1-8)"
+  "test/deployment.sh:Deployment readiness (sections 9-15)"
   "test/multi_candidate.sh:Multi-candidate isolation (section 19)"
   "test/mobile_markup.sh:Mobile markup + resume checks (section 20, static only)"
   "test/google_sync.sh:Google Sheets reporting + failure paths (sections 13-16)"

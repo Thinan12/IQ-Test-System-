@@ -101,6 +101,101 @@ distinguishable in the UI; they are never mixed silently with real data.
 - Set `CORS_ORIGIN` to your real admin frontend's origin in production instead
   of leaving it permissive.
 
+## Automatic submission when time runs out
+
+The assessment deadline is `assessment_sessions.expires_at`, set from the server
+clock when the candidate starts. **The browser countdown is only a prompt** —
+nothing the client sends about time is trusted.
+
+An assessment is finalized exactly once, through `finalizeSession()` in
+[src/lib/finalize.js](src/lib/finalize.js). Three things can trigger it:
+
+1. **The candidate presses Submit** — recorded as `MANUAL` / `CANDIDATE_SUBMITTED`.
+2. **The client countdown reaches zero** — the portal immediately POSTs the
+   submission itself, so the candidate sees the outcome without waiting.
+3. **The server notices the deadline has passed** — on any exam API request
+   (`requireActiveSession`), when the link is reopened, and via a background
+   sweep every `AUTO_SUBMIT_SWEEP_SECONDS` (default 60). The sweep is what
+   covers a candidate who simply walks away: no request ever arrives from that
+   browser, so nothing else would notice.
+
+The server also sweeps once at startup, catching anything that expired while the
+process was down.
+
+### Exactly one final state
+
+`finalizeSession()` opens a transaction whose first statement is a conditional
+update:
+
+```sql
+UPDATE assessment_sessions SET status='SUBMITTED', ... WHERE id = ? AND status = 'IN_PROGRESS'
+```
+
+Only the caller whose update actually changed a row goes on to grade and record.
+Everything else is told the assessment is already finalized and changes nothing.
+A manual submission a second before expiry is therefore never re-finalized or
+re-scored by the auto path, and six simultaneous submissions still produce one
+score row, one integrity row and one audit entry — all asserted in
+`test/auto_submit.sh`.
+
+### What is preserved
+
+Every answer already saved to the server is kept and graded. Nothing is
+invented: a question the candidate never filled in stays unanswered and scores
+zero. Question timing is closed off at finalization, the assessment is locked,
+and no further writes are accepted.
+
+### What is recorded
+
+`status` stays `SUBMITTED` — it is the lifecycle lock, and everything that
+already keyed off it keeps working unchanged. *How* the assessment ended is
+recorded separately, and that is what HR and the candidate are shown:
+
+| Column | Values |
+| --- | --- |
+| `submission_type` | `MANUAL` · `AUTO_SUBMITTED` |
+| `submission_reason` | `CANDIDATE_SUBMITTED` · `TIME_EXPIRED` |
+| `answered_count` / `unanswered_count` | counted at finalization |
+
+The candidate's portal shows a **TIME EXPIRED** screen and cannot continue. HR
+gets a **Submission record** panel on the candidate's Assessment tab with
+status, reason, started, scheduled end, actual end, duration, answered and
+unanswered. An `ASSESSMENT_AUTO_SUBMITTED` audit record carries the candidate,
+assessment, timestamp, reason and both counts.
+
+## Deployment
+
+See **[RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md)** for the exact Railway
+configuration. The essentials:
+
+- **`GET /api/health`** returns `{"status":"ok","database":"connected"}`. It
+  needs no authentication, exposes no configuration, and is exempt from the
+  HTTPS redirect so an internal plain-HTTP probe still succeeds.
+- **SQLite needs a persistent volume.** `DATABASE_PATH` can point anywhere; the
+  app creates the directory, and the database, its WAL/SHM sidecars and
+  `backups/` all live beside it — never inside `public/`, so none of it is
+  web-accessible. Without a mounted volume a container redeploy destroys
+  everything.
+- **CORS**: `CORS_ORIGIN` takes one origin or a comma-separated list. Under
+  `NODE_ENV=production` an unlisted origin gets no allow-origin header at all,
+  and the API never answers with a wildcard. The bundled admin and exam SPAs are
+  same-origin, so the app works fully with `CORS_ORIGIN` unset.
+- The server reads `PORT` from the environment and binds `HOST` (default
+  `0.0.0.0`).
+
+### Seeding a production database
+
+```bash
+npm run seed        # reference data only — safe for production
+npm run seed:demo   # + ~20 demo candidates — local/staging only
+```
+
+`npm run seed` creates admin accounts, the question bank and answer keys,
+eligibility rules, the interview rubric and scholarship policy. **It creates no
+candidate records.** Every step is idempotent, so it is safe to re-run. A fresh
+database has no users and no questions, so this must be run once before anyone
+can log in.
+
 ## Data management (Super Admin)
 
 `Admin -> Data Management` is a Super-Admin-only page. Every button on it calls an
@@ -195,6 +290,7 @@ src/
     grading.js            server-side calculation marking engine (partial credit)
     eligibility.js         eligibility rule engine
     audit.js              audit log writer
+    finalize.js           the single, atomic, idempotent assessment finalizer
     dataManagement.js     statistics, demo fixtures, transactional candidate deletion
     sheetData.js          builds the seven HR reporting sheets from SQLite (no network)
     googleSheets.js       Google Sheets API client, sync + pending-retry logic
@@ -212,7 +308,9 @@ public/
 e2e_test.sh                automated black-box test of the full workflow incl. security checks
 test/
   lib.sh                   shared harness - throwaway DB per suite, never touches data/
-  security_check.sh        section 18 - security assertions
+  security_check.sh        section 16 - security assertions
+  auto_submit.sh           sections 1-8 - auto-submit on time expiry
+  deployment.sh            sections 9-15 - volume path, seeding, health, CORS, Node
   multi_candidate.sh       section 19 - three candidates, three sessions, no bleed
   mobile_markup.sh         section 20 - static mobile checks (device testing is manual)
   google_sync.sh           sections 13-16 - Sheets reporting and its failure paths
@@ -251,6 +349,8 @@ the version `better-sqlite3` was compiled against, pass another one:
 | --- | --- |
 | `e2e_test.sh` | The core workflow end to end: create candidate, generate link, open it as an unauthenticated stranger, verify identity, answer all 6 calculation questions + essay, simulate a large paste and tab switches, submit, confirm post-submission edits are rejected, confirm a re-issued link revokes (but preserves) the old one, HR sees the full per-question breakdown, essay/interview scoring rolls into a final score and pass/fail, reports (CSV/PDF/Excel) and the audit log are populated, a bogus token is rejected. |
 | `test/security_check.sh` | All 18 checks from the security section, 101 assertions: admin API auth, cross-candidate isolation, score/answer-key immutability, double submission, expired/revoked/superseded/invalid tokens, role permissions, Super-Admin-only deletion, no Google credentials in anything the browser receives, the database file not being served, bcrypt hashing, refusal to start without a strong `JWT_SECRET`, rate limiting, and HTTPS enforcement + HSTS under `NODE_ENV=production`. |
+| `test/auto_submit.sh` | Genuine auto-submission, driven by a real 1-minute assessment. An abandoned session is finalized by the server with no candidate action; saved answers are kept and unanswered ones stay unanswered; the result exists and the assessment is locked; `AUTO_SUBMITTED` / `TIME_EXPIRED` reach HR and the audit log; a late request finalizes on the spot and its answer is rejected; a manual submission just before expiry is never duplicated, re-scored or relabelled; six simultaneous submissions yield one final state; and a client-supplied deadline is ignored. |
+| `test/deployment.sh` | Deployment readiness: SQLite opens from a custom `DATABASE_PATH` on a directory that does not exist yet, WAL/SHM sidecars and backups land beside it and never under `public/` or over HTTP, data survives a restart, the health check reports `ok`/`connected` and leaks nothing, production CORS allows only listed origins and never a wildcard, Node 20 pinning and `0.0.0.0` binding, and `npm run seed` creates reference data with **zero** candidate records while `seed:demo` is the only path that creates them. |
 | `test/multi_candidate.sh` | Three candidates with three links, started interleaved and submitted independently: each sees only their own data, each identity check is bound to its own candidate, scores and essay text never cross over, each submission locks independently, and marking one candidate leaves the others untouched. |
 | `test/mobile_markup.sh` | Static mobile-readiness checks on the candidate portal: viewport and safe-area handling, pinch zoom left enabled, numeric keypads, real radio inputs with tappable rows, 48px touch targets, 16px fields (so iOS Safari does not zoom on focus), the countdown, Next/Previous, and — over real HTTP — that a partially typed answer survives on the server, that reopening the link resumes the session with the server's own deadline, and that a resubmit from a flaky connection is rejected. **This is not a device test**; see `MOBILE_TEST_CHECKLIST.md`. |
 | `test/google_sync.sh` | Google Sheets as a reporting destination, focused on the failure path. Unconfigured: the sync says exactly which variables are missing and returns 503 rather than crashing, and assessments complete normally. Configured but unreachable: the candidate still submits, is never shown a Google or database message, the submission is not delayed waiting on Google, the result is in SQLite, the session is left `PENDING`, the administrator sees it listed, **RETRY GOOGLE SHEETS SYNC** reports the failure honestly and leaves it retryable, the failure is audited, credentials never appear in any browser-facing response, and role restrictions hold. |

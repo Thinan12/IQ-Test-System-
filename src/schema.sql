@@ -151,6 +151,14 @@ CREATE TABLE IF NOT EXISTS assessment_sessions (
   expires_at TEXT,
   submitted_at TEXT,
   status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(status IN ('NOT_STARTED','IN_PROGRESS','SUBMITTED')),
+  -- `status` stays the lifecycle lock ('SUBMITTED' = finalized, no further writes).
+  -- HOW it was finalized is recorded separately so nothing that already keys off
+  -- status='SUBMITTED' changes behaviour. The status HR and the candidate are
+  -- shown is derived from these two columns (see src/lib/finalize.js).
+  submission_type TEXT CHECK(submission_type IN ('MANUAL','AUTO_SUBMITTED')),
+  submission_reason TEXT CHECK(submission_reason IN ('CANDIDATE_SUBMITTED','TIME_EXPIRED')),
+  answered_count INTEGER,
+  unanswered_count INTEGER,
   verified INTEGER NOT NULL DEFAULT 0,
   google_sync_status TEXT NOT NULL DEFAULT 'NOT_REQUESTED' CHECK(google_sync_status IN ('NOT_REQUESTED','PENDING','SYNCED'))
 );

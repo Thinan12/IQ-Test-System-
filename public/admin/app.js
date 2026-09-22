@@ -226,6 +226,7 @@ function tabAssessment(d, el, id) {
     <div class="card"><div class="section-title">Link history</div><div class="table-wrap"><table><thead><tr><th>Token</th><th>Status</th><th>Created</th><th>Expires</th><th>Accessed</th></tr></thead>
     <tbody>${d.links.map((l) => `<tr><td class="mono faint">${l.token.slice(0, 10)}…</td><td>${linkBadge(l.status, l.expires_at)}</td><td class="faint">${fmtT(l.created_at)}</td><td class="faint">${fmtT(l.expires_at)}</td><td class="faint">${l.first_access_at ? fmtT(l.first_access_at) : '—'}</td></tr>`).join('') || '<tr><td colspan="5" class="faint">No links yet.</td></tr>'}</tbody></table></div></div>
   </div>
+  ${submissionRecordHTML(d.session)}
   <div class="card" style="margin-top:14px;"><div class="section-title">Score summary</div><div class="grid grid-3">
     <div class="kpi"><div class="num">${d.scores ? d.scores.calc_marks : 0}/30</div><div class="lbl">Calculation</div></div>
     <div class="kpi"><div class="num">${d.scores && d.scores.essay_marks != null ? d.scores.essay_marks : '—'}/30</div><div class="lbl">Written</div></div>
@@ -234,6 +235,32 @@ function tabAssessment(d, el, id) {
   $('#genLink').onclick = async () => { await api('/candidates/' + id + '/links', { method: 'POST' }); toast('New secure link generated.'); viewCandidateDetail([id], el.parentElement); };
   if ($('#copyLink')) $('#copyLink').onclick = () => { navigator.clipboard.writeText(`${location.origin}/exam/${active.token}`); toast('Link copied.'); };
   if ($('#copyWA')) $('#copyWA').onclick = () => { navigator.clipboard.writeText(`Dear ${d.candidate.full_name},\n\nYou are invited to complete the LALCO recruitment assessment.\n\nAssessment link:\n${location.origin}/exam/${active.token}\n\nThis invitation link expires shortly. Please complete the assessment within the allocated assessment time once you begin.\n\nThank you.`); toast('WhatsApp message copied.'); };
+}
+// How the assessment ended: manual submission or server-side automatic
+// submission on time expiry. Shown to HR alongside the timing record.
+function submissionRecordHTML(session) {
+  if (!session) return '';
+  const auto = session.submissionType === 'AUTO_SUBMITTED';
+  const status = session.displayStatus || session.status;
+  const badge = auto
+    ? '<span class="badge badge-warning">AUTO_SUBMITTED</span>'
+    : status === 'SUBMITTED'
+      ? '<span class="badge badge-success">SUBMITTED</span>'
+      : `<span class="badge badge-info">${esc(status)}</span>`;
+  const row = (label, value) => `<tr><td class="faint" style="width:190px;">${label}</td><td>${value}</td></tr>`;
+  return `<div class="card" style="margin-top:14px;"><div class="section-title">Submission record</div>
+    <div class="table-wrap"><table><tbody>
+      ${row('Status', badge)}
+      ${row('Reason', session.submissionReason ? `<span class="mono">${esc(session.submissionReason)}</span>` : '<span class="faint">—</span>')}
+      ${row('Started', session.started_at ? fmtDT(session.started_at) : '—')}
+      ${row('Scheduled end', session.scheduledEndAt ? fmtDT(session.scheduledEndAt) : '—')}
+      ${row('Actual end', session.submitted_at ? fmtDT(session.submitted_at) : '<span class="faint">not finished</span>')}
+      ${row('Duration', session.durationLabel || '—')}
+      ${row('Answered', session.answeredCount != null ? `<b>${session.answeredCount}</b>` : '—')}
+      ${row('Unanswered', session.unansweredCount != null ? `<b>${session.unansweredCount}</b>` : '—')}
+    </tbody></table></div>
+    ${auto ? '<p class="faint" style="margin-top:8px;">The assessment time ran out. The server finalized it automatically and graded the answers the candidate had already saved; unanswered questions were left unanswered.</p>' : ''}
+  </div>`;
 }
 function linkBadge(status, expiresAt) {
   let live = status;

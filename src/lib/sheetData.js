@@ -4,6 +4,7 @@
 // the CSV/Excel exports without touching the Google API.
 const db = require('../db');
 const { evaluateEligibility } = require('./eligibility');
+const { displayStatus } = require('./finalize');
 
 function cell(v) {
   if (v === null || v === undefined) return '';
@@ -63,7 +64,7 @@ function buildCandidatesSheet(includeDemo) {
       c.iq,
       evaluateEligibility(c, rules).status,
       c.application_date,
-      session ? session.status : 'NOT_INVITED',
+      session ? displayStatus(session) : 'NOT_INVITED',
       c.status,
     ]);
   });

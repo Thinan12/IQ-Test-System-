@@ -163,7 +163,9 @@ start_server() { # start_server [port]
   require_free_port "$port"
   TEST_DIR="$(mktemp -d)"
   NATIVE_BACKEND="$(native_path "$BACKEND_DIR")"
-  export DATABASE_PATH="$(native_path "$TEST_DIR")/test.db"
+  # A suite may pre-set DATABASE_PATH (e.g. to test a mounted-volume path);
+  # otherwise each run gets its own throwaway database.
+  export DATABASE_PATH="${DATABASE_PATH:-$(native_path "$TEST_DIR")/test.db}"
   export PORT="$port"
   export JWT_SECRET="${JWT_SECRET:-test-secret-$(date +%s)-0123456789abcdef}"
   export DEMO_PASSWORD="${DEMO_PASSWORD:-ChangeMe123!}"
@@ -179,9 +181,12 @@ start_server() { # start_server [port]
 
   for _ in $(seq 1 40); do
     if [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/admin/candidates")" = "401" ]; then
-      # Guard: a test must never run against the real database.
+      # Guard: a test must never write inside the project directory, which is
+      # where the real database lives. The filename itself is irrelevant — a
+      # suite may legitimately use "lalco.db" on a simulated volume elsewhere.
       case "$DATABASE_PATH" in
-        *lalco.db) c_red "refusing to run: DATABASE_PATH points at the production database"; exit 1 ;;
+        "$NATIVE_BACKEND"*|"$BACKEND_DIR"*)
+          c_red "refusing to run: DATABASE_PATH is inside the project directory ($DATABASE_PATH)"; exit 1 ;;
       esac
       return 0
     fi

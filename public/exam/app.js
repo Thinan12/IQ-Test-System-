@@ -33,10 +33,14 @@ async function boot() {
   shell('<p class="muted">Loading your assessment…</p>');
   try {
     const info = await exam('');
+    if (info.session && info.session.status === 'AUTO_SUBMITTED') return renderTimeExpired(info.session);
     if (info.session && info.session.status === 'SUBMITTED') return renderDone(info.session.submittedAt);
-    if (info.session && info.session.status === 'IN_PROGRESS') { STATE.expiresAt = info.session.expiresAt; return renderQuestionFlow(info); }
+    if (info.session && info.session.status === 'IN_PROGRESS') { STATE.expiresAt = info.session.scheduledEndAt || info.session.expiresAt; return renderQuestionFlow(info); }
     renderInstructions(info);
   } catch (e) {
+    // The server finalizes an expired assessment on any request, so this is the
+    // normal path for a candidate who reopens the link after time ran out.
+    if (e.data && e.data.autoSubmitted) return renderTimeExpired(e.data);
     shell(`<div style="text-align:center;padding-top:60px;"><h2>Assessment link unavailable</h2><p class="muted">${esc(e.data && e.data.error || e.message)}</p></div>`);
   }
 }
@@ -93,7 +97,13 @@ function startTimer() {
     const remaining = Math.max(0, Math.floor((new Date(STATE.expiresAt) - Date.now()) / 1000));
     el.textContent = String(Math.floor(remaining / 60)).padStart(2, '0') + ':' + String(remaining % 60).padStart(2, '0');
     if (remaining < 120) el.classList.add('low');
-    if (remaining <= 0) { clearInterval(STATE.timerInterval); toast('Time is up — please submit now.'); }
+    if (remaining <= 0) {
+      clearInterval(STATE.timerInterval);
+      // Real auto-submit. The server is authoritative and will finalize this
+      // assessment regardless, but sending it immediately means the candidate
+      // sees the outcome straight away instead of waiting for the sweep.
+      autoSubmit();
+    }
   }, 1000);
 }
 
@@ -149,7 +159,11 @@ async function showQuestion() {
     const deltaSeconds = Math.round((Date.now() - questionStartedAt) / 1000);
     questionStartedAt = Date.now();
     try { await exam('/answer', { method: 'POST', body: JSON.stringify({ questionId: q.id, answer: collectAnswer(), timeSpentDeltaSeconds: deltaSeconds }) }); }
-    catch (e) { if (e.status === 410) { toast('Time expired — please review and submit.'); } }
+    catch (e) {
+      // 410 means the server's deadline passed and it finalized the assessment
+      // while the candidate was still typing. Show that, don't ask them to act.
+      if (e.status === 410) { renderTimeExpired(e.data || {}); }
+    }
   }
   const debouncedSave = debounce(saveAnswer, 500);
   if (isEssay) {
@@ -195,12 +209,68 @@ async function showReview() {
   };
 }
 
+// Guard so the countdown, a retry and a manual tap cannot fire three requests.
+// The server is idempotent anyway; this just keeps the UI sane.
+let SUBMITTING = false;
+
 async function doSubmit() {
+  if (SUBMITTING) return;
+  SUBMITTING = true;
   try {
     const res = await exam('/submit', { method: 'POST' });
     localStorage.removeItem(LS_KEY);
+    if (res.status === 'AUTO_SUBMITTED') return renderTimeExpired(res);
     renderDone(res.submittedAt);
-  } catch (e) { toast((e.data && e.data.error) || 'Submission failed. Please try again.'); }
+  } catch (e) {
+    // Already finalized (e.g. the server swept it first) — show the real outcome
+    // rather than an error the candidate can do nothing about.
+    if (e.data && (e.data.alreadySubmitted || e.data.autoSubmitted)) {
+      localStorage.removeItem(LS_KEY);
+      if (e.data.status === 'AUTO_SUBMITTED') return renderTimeExpired(e.data);
+      return renderDone(e.data.submittedAt);
+    }
+    toast((e.data && e.data.error) || 'Submission failed. Please try again.');
+  } finally {
+    SUBMITTING = false;
+  }
+}
+
+// Fired by the countdown reaching zero. No confirmation prompt: the candidate's
+// time is over and there is nothing left to decide.
+async function autoSubmit() {
+  if (SUBMITTING) return;
+  SUBMITTING = true;
+  try {
+    const res = await exam('/submit', { method: 'POST' });
+    localStorage.removeItem(LS_KEY);
+    renderTimeExpired(res);
+  } catch (e) {
+    localStorage.removeItem(LS_KEY);
+    if (e.data && (e.data.autoSubmitted || e.data.alreadySubmitted)) return renderTimeExpired(e.data);
+    // Even if this request failed (offline, asleep), the server finalizes the
+    // assessment on its own. Tell the candidate the truth: their time is over.
+    renderTimeExpired({ submittedAt: null, offline: true });
+  } finally {
+    SUBMITTING = false;
+  }
+}
+
+function renderTimeExpired(info) {
+  info = info || {};
+  clearInterval(STATE.timerInterval);
+  STATE.step = 'done';
+  const counts = (info.answered != null && info.unanswered != null)
+    ? `<p class="faint" style="margin-top:10px;">${info.answered} answered · ${info.unanswered} unanswered</p>`
+    : '';
+  shell(`<div style="text-align:center;padding-top:30px;">
+    <div style="font-size:44px;margin-bottom:10px;">⏱</div>
+    <h2>TIME EXPIRED</h2>
+    <p class="muted" style="margin-top:8px;">Your assessment time has ended.</p>
+    <p class="muted" style="margin-top:6px;">Your saved answers have been submitted automatically.</p>
+    <p class="muted" style="margin-top:6px;">Thank you.</p>
+    ${counts}
+    <p class="faint" style="margin-top:14px;">${info.submittedAt ? 'Submitted ' + new Date(info.submittedAt).toLocaleString() : ''}</p>
+  </div>`);
 }
 
 function renderDone(submittedAt) {

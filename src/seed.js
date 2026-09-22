@@ -1,9 +1,16 @@
-// Seeds the database with:
+// Seeds REFERENCE / SYSTEM data only, by default:
 //   - the real LALCO question bank, eligibility rules, interview rubric and scholarship policy
 //   - one admin login per role (DEMO credentials — change immediately in real use)
-//   - ~20 DEMO candidates (is_demo = 1) so the admin UI has something to explore
-// Re-running this script is safe: it clears and reseeds demo-only data, but leaves
-// any candidate created through the real app (is_demo = 0) untouched.
+//
+// Fake candidate records are NEVER created unless demo mode is asked for
+// explicitly:
+//
+//   npm run seed         reference data only     <- safe for production
+//   npm run seed:demo    + ~20 demo candidates   <- local/staging exploration
+//   SEED_DEMO_CANDIDATES=true npm run seed       same as seed:demo
+//
+// Every step is idempotent: re-running skips anything already present and never
+// touches candidates created through the real app.
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
 const db = require('./db');
@@ -292,9 +299,26 @@ function seedDemoCandidates() {
   console.log('Seeded 20 demo candidates (is_demo = 1) with varied progress, clearly labeled as demo data.');
 }
 
+// Demo candidates are opt-in only: a production seed must never invent people.
+const wantsDemo = process.argv.includes('--demo')
+  || String(process.env.SEED_DEMO_CANDIDATES || '').toLowerCase() === 'true';
+
 seedUsers();
 seedQuestions();
 seedInterview();
 seedScholarship();
-seedDemoCandidates();
+
+if (wantsDemo) {
+  seedDemoCandidates();
+} else {
+  console.log('Skipped demo candidates (reference data only). Use `npm run seed:demo` to add them.');
+}
+
+if (process.env.NODE_ENV === 'production') {
+  if (wantsDemo) {
+    console.warn('WARNING: demo candidates were seeded into a production database.');
+  }
+  console.log('Reminder: sign in with the seeded accounts and change every password immediately.');
+}
+
 console.log('Seed complete.');
