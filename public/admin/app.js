@@ -2,8 +2,18 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-function fmtDT(iso) { if (!iso) return '—'; const d = new Date(iso); return d.toLocaleDateString(undefined, { month: 'short', day: '2-digit' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
-function fmtT(iso) { if (!iso) return '—'; return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+// SQLite's datetime() stores 'YYYY-MM-DD HH:MM:SS' in UTC with no timezone
+// marker, and JavaScript parses that shape as LOCAL time — which showed every
+// created_at/updated_at seven hours out in Laos. Anything stored goes through
+// this before being rendered.
+function parseDbDate(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const s = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(s)) return new Date(s.replace(' ', 'T') + 'Z');
+  return new Date(s);
+}
+function fmtDT(iso) { const d = parseDbDate(iso); if (!d) return '—'; return d.toLocaleDateString(undefined, { month: 'short', day: '2-digit' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
+function fmtT(iso) { const d = parseDbDate(iso); if (!d) return '—'; return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 function toast(msg, isError) { let w = $('.toast-wrap'); if (!w) { w = document.createElement('div'); w.className = 'toast-wrap'; document.body.appendChild(w); } const t = document.createElement('div'); t.className = 'toast' + (isError ? ' error' : ''); t.textContent = msg; w.appendChild(t); setTimeout(() => t.remove(), 3200); }
 
 let AUTH = JSON.parse(localStorage.getItem('lalco_admin_auth') || 'null'); // {token, user}
@@ -82,11 +92,13 @@ function httpMessage(status, serverMessage) {
 const NAV = [
   { key: 'dashboard', label: 'Dashboard', roles: null },
   { key: 'candidates', label: 'Candidates', roles: null },
+  { key: 'live', label: 'Live Assessments', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
   { key: 'links', label: 'Assessment Links', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'] },
   { key: 'questions', label: 'Question Bank', roles: ['SUPER_ADMIN', 'HR_ADMIN'] },
   { key: 'interviews', label: 'Interviews', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'INTERVIEWER', 'MANAGER'] },
   { key: 'analytics', label: 'Analytics', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
   { key: 'scholarship', label: 'Scholarship Policy', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
+  { key: 'users', label: 'Users', roles: ['SUPER_ADMIN'] },
   { key: 'settings', label: 'Admin Settings', roles: ['SUPER_ADMIN'] },
   { key: 'data', label: 'Data Management', roles: ['SUPER_ADMIN'] },
   { key: 'audit', label: 'Audit Logs', roles: ['SUPER_ADMIN', 'HR_ADMIN'] },
@@ -133,7 +145,11 @@ function sidebarHTML(active) {
     <nav class="sidebar-nav">${NAV.filter(navAllowed).map((n) => `<a data-nav="${n.key}" class="${n.key === active ? 'active' : ''}">${n.label}</a>`).join('')}</nav>
     <div class="sidebar-foot"><b>${esc(AUTH.user.name)}</b><span class="badge badge-neutral">${AUTH.user.role}</span><br><button class="btn btn-sm" style="margin-top:8px;" id="logoutBtn">Sign out</button></div>`;
 }
+let LIVE_TIMER = null;
+function stopLiveRefresh() { if (LIVE_TIMER) { clearInterval(LIVE_TIMER); LIVE_TIMER = null; } }
+
 function renderShell(parts) {
+  stopLiveRefresh(); // never leave a timer running against a replaced view
   const key = parts[0];
   const item = NAV.find((n) => n.key === key);
   document.body.innerHTML = `<div id="app"></div>`;
@@ -143,7 +159,7 @@ function renderShell(parts) {
   $$('.sidebar-nav a').forEach((a) => (a.onclick = () => goto(a.dataset.nav)));
   $('#logoutBtn').onclick = logout;
   if (item && !navAllowed(item)) { $('#content').innerHTML = `<div class="empty"><h3>Not authorized</h3><p>Your role does not have access to this section.</p></div>`; return; }
-  const views = { dashboard: viewDashboard, candidates: viewCandidates, links: viewLinks, questions: viewQuestions, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
+  const views = { dashboard: viewDashboard, candidates: viewCandidates, live: viewLive, links: viewLinks, questions: viewQuestions, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, users: viewUsers, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
   // A view that throws must show a real error with a way out, never a page
   // stuck on "Loading…" (sections 26/29/30).
   Promise.resolve()
@@ -189,12 +205,18 @@ async function viewCandidates(params, el) {
   el.innerHTML = `
     <div class="card" style="margin-bottom:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
       <div class="field" style="flex:1; min-width:200px; margin:0;"><label class="field-label">Search</label><input id="fq" placeholder="Name or code"></div>
+      <div class="field" style="margin:0;"><label class="field-label">Show</label>
+        <select id="fArchived"><option value="">Active candidates</option><option value="1">Archived</option></select></div>
       <button class="btn btn-primary" id="newCandBtn">+ New Candidate</button>
     </div>
     <div class="table-wrap"><table><thead><tr><th>Code</th><th>Name</th><th>Position</th><th>Type</th><th>Eligibility</th><th>Calc</th><th>Essay</th><th>Interview</th><th>Final</th><th>Status</th><th>AI Risk</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>`;
   async function load() {
     const q = $('#fq').value;
-    const { candidates } = await api('/candidates' + (q ? '?q=' + encodeURIComponent(q) : ''));
+    const archived = $('#fArchived').value;
+    const params = [];
+    if (q) params.push('q=' + encodeURIComponent(q));
+    if (archived) params.push('archived=1');
+    const { candidates } = await api('/candidates' + (params.length ? '?' + params.join('&') : ''));
     $('#rows').innerHTML = candidates.map((c) => `<tr style="cursor:pointer" data-id="${c.id}">
       <td class="mono faint">${c.code}</td><td>${esc(c.fullName)}${c.isDemo ? ' <span class="badge badge-neutral">demo</span>' : ''}</td>
       <td class="faint">${esc(c.appliedPosition || '—')}</td><td>${c.applicationType === 'SCHOLARSHIP' ? '<span class="badge badge-info">Scholarship</span>' : '<span class="badge badge-neutral">Normal</span>'}</td>
@@ -203,6 +225,7 @@ async function viewCandidates(params, el) {
     $$('#rows tr[data-id]').forEach((tr) => (tr.onclick = () => goto('candidates/' + tr.dataset.id)));
   }
   $('#fq').addEventListener('input', debounce(load, 300));
+  $('#fArchived').onchange = load;
   $('#newCandBtn').onclick = () => openNewCandidateModal(load);
   load();
 }
@@ -335,9 +358,11 @@ function tabAssessment(d, el, id) {
         ${active ? `<button class="btn btn-sm" id="copyLink">Copy Link</button><button class="btn btn-sm" id="copyWA">Copy WhatsApp Message</button><button class="btn btn-danger btn-sm" id="revokeLink" data-busy="Revoking…" data-link="${active.id}">Revoke Link</button>` : ''}
       </div>
     </div>
-    <div class="card"><div class="section-title">Link history</div><div class="table-wrap"><table><thead><tr><th>Token</th><th>Status</th><th>Created</th><th>Expires</th><th>Accessed</th></tr></thead>
-    <tbody>${d.links.map((l) => `<tr><td class="mono faint">${l.token.slice(0, 10)}…</td><td>${linkBadge(l.status, l.expires_at)}</td><td class="faint">${fmtT(l.created_at)}</td><td class="faint">${fmtT(l.expires_at)}</td><td class="faint">${l.first_access_at ? fmtT(l.first_access_at) : '—'}</td></tr>`).join('') || '<tr><td colspan="5" class="faint">No links yet.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div class="section-title">Link history</div><div class="table-wrap"><table><thead><tr><th>Token</th><th>Status</th><th>Created</th><th>Expires</th><th>Accessed</th><th>Actions</th></tr></thead>
+    <tbody>${d.links.map((l) => `<tr><td class="mono faint">${l.token.slice(0, 10)}…</td><td><span class="badge badge-${linkBadgeTone(l.liveStatus)}">${l.liveStatus}</span></td><td class="faint">${fmtT(l.created_at)}</td><td class="faint">${fmtT(l.expires_at)}</td><td class="faint">${l.first_access_at ? fmtT(l.first_access_at) : '—'}</td>
+      <td style="white-space:nowrap;">${linkActionsHTML(l)}</td></tr>`).join('') || '<tr><td colspan="6" class="faint">No links yet.</td></tr>'}</tbody></table></div></div>
   </div>
+  ${candidateLifecycleHTML(d)}
   ${submissionRecordHTML(d.session)}
   <div class="card" style="margin-top:14px;"><div class="section-title">Score summary</div><div class="grid grid-3">
     <div class="kpi"><div class="num">${d.scores ? d.scores.calc_marks : 0}/30</div><div class="lbl">Calculation</div></div>
@@ -346,6 +371,8 @@ function tabAssessment(d, el, id) {
   </div></div>`;
   $('#genLink').onclick = async () => { await api('/candidates/' + id + '/links', { method: 'POST' }); toast('New secure link generated.'); viewCandidateDetail([id], el.parentElement); };
   if ($('#copyLink')) $('#copyLink').onclick = () => copyText(`${location.origin}/exam/${active.token}`, 'Link copied.');
+  wireLinkActions(d, id, el);
+  wireCandidateLifecycle(d, id, el);
   if ($('#revokeLink')) $('#revokeLink').onclick = async () => {
     if (!confirm('Revoke this assessment link? The candidate will no longer be able to open it. Link history is kept.')) return;
     await api('/candidates/links/' + $('#revokeLink').dataset.link + '/revoke', { method: 'POST' });
@@ -403,7 +430,7 @@ async function copyText(text, successMessage) {
 
 function linkBadge(status, expiresAt) {
   let live = status;
-  if (status === 'ACTIVE' && new Date(expiresAt) < new Date()) live = 'EXPIRED';
+  if (status === 'ACTIVE' && parseDbDate(expiresAt) < new Date()) live = 'EXPIRED';
   const m = { ACTIVE: 'success', EXPIRED: 'warning', USED: 'info', REVOKED: 'danger' };
   return `<span class="badge badge-${m[live]}">${live}</span>`;
 }
@@ -606,7 +633,13 @@ async function viewSettings(_, el) {
     </div>
     <div class="card"><div class="section-title">Assessment settings</div>
       <div class="field"><label class="field-label">Pass threshold (/100)</label><input type="number" id="passT" value="${settings.pass_threshold}"></div>
-      <div class="field"><label class="field-label">Invitation link expiry (minutes)</label><input type="number" id="linkExp" value="${settings.link_expiry_minutes}"></div>
+      <div class="field"><label class="field-label">Invitation link expiry (minutes)</label>
+        <select id="linkExpPreset">
+          ${[5, 10, 15, 20, 30, 60].map((m) => `<option value="${m}" ${settings.link_expiry_minutes === m ? 'selected' : ''}>${m} minutes</option>`).join('')}
+          <option value="custom" ${[5, 10, 15, 20, 30, 60].includes(settings.link_expiry_minutes) ? '' : 'selected'}>Custom…</option>
+        </select>
+        <input type="number" id="linkExp" min="1" max="1440" value="${settings.link_expiry_minutes}" style="margin-top:6px; ${[5, 10, 15, 20, 30, 60].includes(settings.link_expiry_minutes) ? 'display:none;' : ''}">
+        <span class="faint">Already-issued links keep the expiry they were created with.</span></div>
       <div class="field"><label class="field-label">Assessment duration (minutes) — separate timer from the invitation link</label><input type="number" id="duration" value="${settings.assessment_duration_minutes}"></div>
       <div class="field"><label class="field-label">Maximum LTV (%)</label><input type="number" id="maxLtv" value="${settings.max_ltv}"></div>
       <b class="faint">Candidate identity verification (before starting)</b>
@@ -634,6 +667,11 @@ async function viewSettings(_, el) {
     toast('Eligibility rules saved.');
   };
 
+  $('#linkExpPreset').onchange = () => {
+    const v = $('#linkExpPreset').value;
+    if (v === 'custom') { $('#linkExp').style.display = ''; $('#linkExp').focus(); }
+    else { $('#linkExp').style.display = 'none'; $('#linkExp').value = v; }
+  };
   $('#saveSettings').onclick = async () => {
     await api('/settings', {
       method: 'PUT',
@@ -836,6 +874,339 @@ function renderBackups(backups) {
   $$('[data-backup]').forEach((btn) => {
     btn.onclick = () => downloadFile('/settings/data-management/backup/download?file=' + encodeURIComponent(btn.dataset.backup), btn.dataset.backup);
   });
+}
+
+// ---------------- Candidate lifecycle (archive / restore / delete) --------
+function candidateLifecycleHTML(d) {
+  const c = d.candidate;
+  const isSuper = AUTH && AUTH.user.role === 'SUPER_ADMIN';
+  const live = d.liveSessionStatus === 'IN_PROGRESS' || d.liveSessionStatus === 'PAUSED';
+  return `<div class="card" style="margin-top:14px;">
+    <div class="section-title">Candidate record ${c.archived ? '<span class="badge badge-warning">ARCHIVED</span>' : ''}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <button class="btn btn-sm" id="editCandBtn">Edit details</button>
+      ${c.archived
+        ? '<button class="btn btn-sm" id="restoreCandBtn" data-busy="Restoring…">Restore candidate</button>'
+        : '<button class="btn btn-sm" id="archiveCandBtn" data-busy="Archiving…">Archive candidate</button>'}
+      ${isSuper ? `<button class="btn btn-danger btn-sm" id="deleteCandBtn" ${live ? 'disabled title="Terminate the live assessment first"' : ''}>Delete permanently</button>` : ''}
+    </div>
+    <p class="faint" style="margin:8px 0 0;">Archiving hides the candidate from the working list and keeps every record. Permanent deletion is Super Admin only, removes all of their assessment data, and is refused while an assessment is still running.</p>
+  </div>`;
+}
+
+function wireCandidateLifecycle(d, id, el) {
+  const reload = () => viewCandidateDetail([id], el.parentElement);
+  if ($('#archiveCandBtn')) $('#archiveCandBtn').onclick = async () => {
+    if (!confirm('Archive this candidate? They will be hidden from the active list but nothing is deleted.')) return;
+    await api('/candidates/' + id + '/archive', { method: 'POST' });
+    toast('Candidate archived.'); reload();
+  };
+  if ($('#restoreCandBtn')) $('#restoreCandBtn').onclick = async () => {
+    await api('/candidates/' + id + '/restore', { method: 'POST' });
+    toast('Candidate restored.'); reload();
+  };
+  if ($('#editCandBtn')) $('#editCandBtn').onclick = () => openEditCandidateModal(d.candidate, reload);
+  if ($('#deleteCandBtn')) $('#deleteCandBtn').onclick = () => openDeleteCandidateModal(d.candidate, () => goto('candidates'));
+}
+
+function openEditCandidateModal(c, onDone) {
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(10,18,26,.45);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;overflow:auto;';
+  const f = (label, id, value, type) => `<div class="field"><label class="field-label">${label}</label><input id="${id}" ${type ? 'type="' + type + '"' : ''} value="${value == null ? '' : esc(value)}"></div>`;
+  bg.innerHTML = `<div class="card" style="max-width:560px;width:100%;">
+    <div class="section-title">Edit candidate — ${esc(c.code)}</div>
+    <div class="grid grid-2">
+      ${f('Full name *', 'eFullName', c.full_name)}
+      ${f('Phone', 'ePhone', c.phone)}
+      ${f('Email', 'eEmail', c.email)}
+      ${f('Education', 'eEdu', c.education)}
+      ${f('University', 'eUni', c.university)}
+      ${f('Major', 'eMajor', c.major)}
+      ${f('GPA', 'eGpa', c.gpa, 'number')}
+      ${f('IQ', 'eIq', c.iq, 'number')}
+      ${f('Date of birth', 'eDob', c.dob, 'date')}
+      ${f('Province', 'eProvince', c.province)}
+    </div>
+    <p class="faint">Changes are audited. Scores and assessment records are not affected.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" id="eCancel">Cancel</button>
+      <button class="btn btn-primary" id="eSave" data-busy="Saving…">Save changes</button>
+    </div>
+  </div>`;
+  document.body.appendChild(bg);
+  const close = makeDismissable(bg);
+  $('#eCancel', bg).onclick = close;
+  $('#eFullName', bg).focus();
+  $('#eSave', bg).onclick = async () => {
+    const full_name = $('#eFullName', bg).value.trim();
+    if (!full_name) return toast('Full name is required', true);
+    const num = (v) => (v === '' ? null : Number(v));
+    await api('/candidates/' + c.id, { method: 'PATCH', body: JSON.stringify({
+      full_name,
+      phone: $('#ePhone', bg).value.trim(),
+      email: $('#eEmail', bg).value.trim(),
+      education: $('#eEdu', bg).value.trim(),
+      university: $('#eUni', bg).value.trim(),
+      major: $('#eMajor', bg).value.trim(),
+      gpa: num($('#eGpa', bg).value),
+      iq: num($('#eIq', bg).value),
+      dob: $('#eDob', bg).value,
+      province: $('#eProvince', bg).value.trim(),
+    }) });
+    toast('Candidate updated.'); close(); onDone && onDone();
+  };
+}
+
+function openDeleteCandidateModal(c, onDone) {
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:70;display:flex;align-items:center;justify-content:center;padding:16px;';
+  bg.innerHTML = `<div class="card" style="max-width:520px;width:100%;">
+    <div class="section-title" style="color:var(--danger);">Permanently delete ${esc(c.code)}</div>
+    <p>This removes the candidate and <b>all</b> of their assessment sessions, answers, scores, links and integrity records. It cannot be undone. The audit log keeps a record of the deletion.</p>
+    <div class="field"><label class="field-label">Type the candidate code <span class="mono">${esc(c.code)}</span> to confirm</label><input id="dConfirm" autocomplete="off"></div>
+    <div class="field"><label class="field-label">Confirm your Super Admin password</label><input id="dPass" type="password" autocomplete="current-password"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" id="dCancel">Cancel</button>
+      <button class="btn btn-danger" id="dGo" disabled>Delete permanently</button>
+    </div>
+  </div>`;
+  document.body.appendChild(bg);
+  const close = makeDismissable(bg);
+  const go = $('#dGo', bg);
+  const sync = () => { go.disabled = !($('#dConfirm', bg).value.trim() === c.code && $('#dPass', bg).value.length > 0); };
+  $('#dConfirm', bg).addEventListener('input', sync);
+  $('#dPass', bg).addEventListener('input', sync);
+  $('#dCancel', bg).onclick = close;
+  $('#dConfirm', bg).focus();
+  go.onclick = async () => {
+    if (go.disabled) return;
+    const label = go.textContent;
+    go.disabled = true; go.textContent = 'Deleting…';
+    try {
+      const r = await api('/candidates/' + c.id, { method: 'DELETE', body: JSON.stringify({ confirmation: $('#dConfirm', bg).value.trim(), password: $('#dPass', bg).value }) });
+      close(); toast(r.message || 'Candidate deleted.'); onDone && onDone();
+    } catch (e) { go.textContent = label; sync(); }
+  };
+}
+
+// ---------------- Link actions -------------------------------------------
+function linkBadgeTone(status) {
+  return { ACTIVE: 'success', EXPIRED: 'warning', USED: 'info', REVOKED: 'danger', DISABLED: 'warning' }[status] || 'neutral';
+}
+
+function linkActionsHTML(l) {
+  const canControl = AUTH && ['SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'].includes(AUTH.user.role);
+  if (!canControl) return '<span class="faint">—</span>';
+  const buttons = [];
+  if (l.liveStatus === 'DISABLED') buttons.push(`<button class="btn btn-sm" data-linkact="enable" data-linkid="${l.id}" data-busy="Enabling…">Enable</button>`);
+  else if (l.liveStatus === 'ACTIVE') buttons.push(`<button class="btn btn-sm" data-linkact="disable" data-linkid="${l.id}" data-busy="Disabling…">Disable</button>`);
+  if (['ACTIVE', 'DISABLED', 'EXPIRED'].includes(l.liveStatus)) {
+    buttons.push(`<button class="btn btn-sm" data-linkact="extend" data-linkid="${l.id}" data-busy="Extending…">Extend</button>`);
+  }
+  return buttons.join(' ') || '<span class="faint">—</span>';
+}
+
+function wireLinkActions(d, id, el) {
+  $$('[data-linkact]').forEach((btn) => {
+    btn.onclick = async () => {
+      const act = btn.dataset.linkact;
+      const linkId = btn.dataset.linkid;
+      let body;
+      if (act === 'extend') {
+        const mins = prompt('Extend this invitation link by how many minutes?', '10');
+        if (!mins) return;
+        body = JSON.stringify({ addMinutes: Number(mins) });
+      }
+      await api('/exam-control/links/' + linkId + '/' + act, { method: 'POST', body });
+      toast('Link ' + (act === 'extend' ? 'expiry extended' : act + 'd') + '.');
+      viewCandidateDetail([id], el.parentElement);
+    };
+  });
+}
+
+// ---------------- Live Assessments ---------------------------------------
+function fmtRemaining(seconds) {
+  if (seconds == null) return '—';
+  const m = Math.floor(seconds / 60), sec = seconds % 60;
+  return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
+async function viewLive(_, el) {
+  async function load() {
+    const { assessments, pausePolicy } = await api('/exam-control/live');
+    const rows = assessments.map((a) => {
+      const act = (name, label, busy, tone) => a.availableActions.includes(name)
+        ? `<button class="btn btn-sm ${tone || ''}" data-live="${name}" data-sid="${a.sessionId}" data-lid="${a.linkId || ''}" data-busy="${busy}">${label}</button>` : '';
+      return `<tr>
+        <td><b>${esc(a.candidateName)}</b><br><span class="faint mono" style="font-size:11px;">${esc(a.candidateCode)}</span></td>
+        <td class="faint">${fmtDT(a.startedAt)}</td>
+        <td class="mono ${a.remainingSeconds < 300 ? 'danger-text' : ''}"><b>${fmtRemaining(a.remainingSeconds)}</b>${a.totalPausedSeconds ? `<br><span class="faint" style="font-size:11px;">+${Math.round(a.totalPausedSeconds / 60)}m paused</span>` : ''}</td>
+        <td class="mono">${a.answered}/${a.totalQuestions}<br><span class="faint" style="font-size:11px;">${a.progressPercent}%</span></td>
+        <td><span class="badge badge-${a.status === 'PAUSED' ? 'warning' : 'info'}">${a.status}</span></td>
+        <td>${a.linkStatus ? `<span class="badge badge-${linkBadgeTone(a.linkStatus)}">${a.linkStatus}</span>` : '<span class="faint">—</span>'}</td>
+        <td>${riskBadge(a.integrityRisk)}</td>
+        <td class="faint">${fmtT(a.lastActivityAt)}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-sm" data-live="VIEW" data-cid="${a.candidateId}">View</button>
+          ${act('PAUSE', 'Pause', 'Pausing…')}
+          ${act('RESUME', 'Resume', 'Resuming…')}
+          ${act('CHANGE_TIME', 'Set time', 'Saving…')}
+          ${act('EXTEND_TIME', '+Time', 'Extending…')}
+          ${act('DISABLE_LINK', 'Disable link', 'Disabling…')}
+          ${act('TERMINATE', 'Terminate', 'Terminating…', 'btn-danger')}
+        </td></tr>`;
+    }).join('');
+
+    el.innerHTML = `<div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <div><b>${assessments.length}</b> assessment(s) in progress</div>
+        <span class="faint">Pause policy: ${pausePolicy === 'FREEZE_AND_CREDIT' ? 'the countdown freezes and the paused time is credited back on resume' : pausePolicy}</span>
+        <span style="flex:1"></span>
+        <label class="faint" style="display:flex;gap:6px;align-items:center;"><input type="checkbox" id="liveAuto" checked style="width:15px;height:15px;"> auto-refresh</label>
+        <button class="btn btn-sm" id="liveRefresh">Refresh</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Started</th><th>Time left</th><th>Progress</th><th>Status</th><th>Link</th><th>Integrity</th><th>Last activity</th><th>Actions</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="9" class="faint" style="text-align:center;padding:24px;">No assessments are running right now.</td></tr>'}</tbody></table></div>`;
+
+    $('#liveRefresh').onclick = load;
+    $('#liveAuto').onchange = (e) => {
+      stopLiveRefresh();
+      if (e.target.checked) LIVE_TIMER = setInterval(load, 15000);
+    };
+
+    $$('[data-live]').forEach((btn) => {
+      btn.onclick = async () => {
+        const action = btn.dataset.live;
+        const sid = btn.dataset.sid;
+        if (action === 'VIEW') return goto('candidates/' + btn.dataset.cid);
+        try {
+          if (action === 'PAUSE') {
+            if (!confirm('Pause this assessment? The candidate is locked out and their countdown freezes.')) return;
+            await api('/exam-control/sessions/' + sid + '/pause', { method: 'POST' });
+            toast('Assessment paused.');
+          } else if (action === 'RESUME') {
+            const r = await api('/exam-control/sessions/' + sid + '/resume', { method: 'POST' });
+            toast(`Resumed. ${Math.round((r.pausedSeconds || 0) / 60)} minute(s) credited back.`);
+          } else if (action === 'CHANGE_TIME') {
+            const mins = prompt('Set a NEW total exam duration in minutes (measured from when the candidate started):', '45');
+            if (!mins) return;
+            await api('/exam-control/sessions/' + sid + '/change-time', { method: 'POST', body: JSON.stringify({ durationMinutes: Number(mins) }) });
+            toast('Exam duration changed.');
+          } else if (action === 'EXTEND_TIME') {
+            const mins = prompt('Add how many minutes to the current deadline?', '10');
+            if (!mins) return;
+            await api('/exam-control/sessions/' + sid + '/extend-time', { method: 'POST', body: JSON.stringify({ addMinutes: Number(mins) }) });
+            toast('Time extended.');
+          } else if (action === 'TERMINATE') {
+            if (!confirm('Terminate this assessment now? It will be locked immediately and marked from the answers already saved. This cannot be undone.')) return;
+            const r = await api('/exam-control/sessions/' + sid + '/terminate', { method: 'POST' });
+            toast(`Assessment terminated. ${r.answered} answered, ${r.unanswered} unanswered.`);
+          } else if (action === 'DISABLE_LINK') {
+            const lid = btn.dataset.lid;
+            if (!lid) return toast('This assessment has no link to disable.', true);
+            await api('/exam-control/links/' + lid + '/disable', { method: 'POST' });
+            toast('Link disabled.');
+          }
+          load();
+        } catch (e) { /* api() already reported it */ }
+      };
+    });
+  }
+
+  el.innerHTML = 'Loading…';
+  await load();
+  stopLiveRefresh();
+  LIVE_TIMER = setInterval(load, 15000);
+}
+
+// ---------------- Users ---------------------------------------------------
+async function viewUsers(_, el) {
+  async function load() {
+    const { users, roles, minPasswordLength } = await api('/users');
+    el.innerHTML = `<div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;">
+        <div><b>${users.length}</b> account(s)</div><span style="flex:1"></span>
+        <button class="btn btn-primary btn-sm" id="newUserBtn">+ New User</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+      <tbody>${users.map((u) => `<tr>
+        <td><b>${esc(u.name)}</b></td><td class="faint">${esc(u.email)}</td>
+        <td><span class="badge badge-neutral">${u.role}</span></td>
+        <td>${u.active ? '<span class="badge badge-success">Active</span>' : '<span class="badge badge-danger">Disabled</span>'}</td>
+        <td class="faint">${fmtDT(u.createdAt)}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-sm" data-uact="edit" data-uid="${u.id}">Edit</button>
+          <button class="btn btn-sm" data-uact="role" data-uid="${u.id}">Role</button>
+          <button class="btn btn-sm" data-uact="active" data-uid="${u.id}" data-active="${u.active ? '0' : '1'}" data-busy="Saving…">${u.active ? 'Disable' : 'Enable'}</button>
+          <button class="btn btn-sm" data-uact="reset" data-uid="${u.id}">Reset password</button>
+        </td></tr>`).join('')}</tbody></table></div>
+      <p class="faint" style="margin-top:10px;">Passwords are bcrypt-hashed and never displayed. Password resets and role changes are written to the audit log.</p>`;
+
+    const byId = (id) => users.find((u) => u.id === id);
+    $('#newUserBtn').onclick = () => openUserModal(null, roles, minPasswordLength, load);
+    $$('[data-uact]').forEach((btn) => {
+      btn.onclick = async () => {
+        const u = byId(btn.dataset.uid);
+        const act = btn.dataset.uact;
+        if (act === 'edit') return openUserModal(u, roles, minPasswordLength, load);
+        if (act === 'role') {
+          const role = prompt('New role for ' + u.name + '\n(' + roles.join(', ') + ')', u.role);
+          if (!role || role === u.role) return;
+          await api('/users/' + u.id + '/role', { method: 'POST', body: JSON.stringify({ role: role.trim().toUpperCase() }) });
+          toast('Role changed.'); return load();
+        }
+        if (act === 'active') {
+          const makeActive = btn.dataset.active === '1';
+          if (!makeActive && !confirm('Disable ' + u.name + '? They will not be able to sign in.')) return;
+          await api('/users/' + u.id + '/active', { method: 'POST', body: JSON.stringify({ active: makeActive }) });
+          toast(makeActive ? 'User enabled.' : 'User disabled.'); return load();
+        }
+        if (act === 'reset') {
+          if (!confirm('Reset the password for ' + u.name + '? A new one will be generated and shown once.')) return;
+          const r = await api('/users/' + u.id + '/reset-password', { method: 'POST', body: JSON.stringify({ generate: true }) });
+          window.prompt('New password for ' + u.name + ' — copy it now, it will not be shown again:', r.generatedPassword);
+          toast('Password reset.'); return load();
+        }
+      };
+    });
+  }
+
+  el.innerHTML = 'Loading…';
+  await load();
+}
+
+function openUserModal(user, roles, minPasswordLength, onDone) {
+  const editing = !!user;
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(10,18,26,.45);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px;overflow:auto;';
+  bg.innerHTML = `<div class="card" style="max-width:480px;width:100%;">
+    <div class="section-title">${editing ? 'Edit user — ' + esc(user.name) : 'New user'}</div>
+    <div class="field"><label class="field-label">Full name *</label><input id="uName" value="${editing ? esc(user.name) : ''}"></div>
+    <div class="field"><label class="field-label">Email *</label><input id="uEmail" type="email" value="${editing ? esc(user.email) : ''}"></div>
+    ${editing ? '' : `<div class="field"><label class="field-label">Role *</label><select id="uRole">${roles.map((r) => `<option value="${r}">${r}</option>`).join('')}</select></div>
+    <div class="field"><label class="field-label">Password * (at least ${minPasswordLength} characters)</label><input id="uPass" type="password" autocomplete="new-password"></div>`}
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" id="uCancel">Cancel</button>
+      <button class="btn btn-primary" id="uSave" data-busy="Saving…">${editing ? 'Save changes' : 'Create user'}</button>
+    </div>
+  </div>`;
+  document.body.appendChild(bg);
+  const close = makeDismissable(bg);
+  $('#uCancel', bg).onclick = close;
+  $('#uName', bg).focus();
+  $('#uSave', bg).onclick = async () => {
+    const name = $('#uName', bg).value.trim();
+    const email = $('#uEmail', bg).value.trim();
+    if (!name || !email) return toast('Name and email are required', true);
+    if (editing) {
+      await api('/users/' + user.id, { method: 'PATCH', body: JSON.stringify({ name, email }) });
+      toast('User updated.');
+    } else {
+      const password = $('#uPass', bg).value;
+      if (password.length < minPasswordLength) return toast(`Password must be at least ${minPasswordLength} characters`, true);
+      await api('/users', { method: 'POST', body: JSON.stringify({ name, email, role: $('#uRole', bg).value, password }) });
+      toast('User created.');
+    }
+    close(); onDone && onDone();
+  };
 }
 
 // ---------------- Audit ----------------

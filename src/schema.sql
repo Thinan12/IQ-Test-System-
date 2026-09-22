@@ -81,6 +81,11 @@ CREATE TABLE IF NOT EXISTS candidates (
   iq INTEGER,
   status TEXT NOT NULL DEFAULT 'DRAFT',
   is_demo INTEGER NOT NULL DEFAULT 0,
+  -- Archived candidates are hidden from the working lists but keep every
+  -- record intact; only a Super Admin can delete one permanently.
+  archived INTEGER NOT NULL DEFAULT 0,
+  archived_at TEXT,
+  archived_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -129,6 +134,13 @@ CREATE TABLE IF NOT EXISTS assessment_links (
   expires_at TEXT NOT NULL,
   created_by TEXT,
   revoked_at TEXT,
+  revoked_by TEXT,
+  -- A link is DISABLED when disabled_at IS NOT NULL while status is still
+  -- 'ACTIVE' — disabling is reversible, revoking is not.
+  disabled_at TEXT,
+  disabled_by TEXT,
+  expiry_extended_by TEXT,
+  expiry_extended_at TEXT,
   first_access_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_links_candidate ON assessment_links(candidate_id);
@@ -151,12 +163,24 @@ CREATE TABLE IF NOT EXISTS assessment_sessions (
   expires_at TEXT,
   submitted_at TEXT,
   status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(status IN ('NOT_STARTED','IN_PROGRESS','SUBMITTED')),
+  -- Pause policy: the countdown freezes and the time is credited back on
+  -- resume, so expires_at is pushed out by exactly the paused duration.
+  -- A session is paused when status='IN_PROGRESS' AND paused_at IS NOT NULL;
+  -- `status` itself is left alone so every existing query keeps working and no
+  -- CHECK constraint has to be rebuilt on a live database.
+  paused_at TEXT,
+  paused_by TEXT,
+  total_paused_seconds INTEGER NOT NULL DEFAULT 0,
+  -- Admin adjustments to the deadline, kept for the audit trail.
+  time_adjusted_by TEXT,
+  time_adjusted_at TEXT,
+  original_expires_at TEXT,
   -- `status` stays the lifecycle lock ('SUBMITTED' = finalized, no further writes).
   -- HOW it was finalized is recorded separately so nothing that already keys off
   -- status='SUBMITTED' changes behaviour. The status HR and the candidate are
   -- shown is derived from these two columns (see src/lib/finalize.js).
-  submission_type TEXT CHECK(submission_type IN ('MANUAL','AUTO_SUBMITTED')),
-  submission_reason TEXT CHECK(submission_reason IN ('CANDIDATE_SUBMITTED','TIME_EXPIRED')),
+  submission_type TEXT CHECK(submission_type IN ('MANUAL','AUTO_SUBMITTED','TERMINATED')),
+  submission_reason TEXT CHECK(submission_reason IN ('CANDIDATE_SUBMITTED','TIME_EXPIRED','TERMINATED_BY_ADMIN')),
   answered_count INTEGER,
   unanswered_count INTEGER,
   verified INTEGER NOT NULL DEFAULT 0,

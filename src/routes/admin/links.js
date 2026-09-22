@@ -1,16 +1,14 @@
 const express = require('express');
 const db = require('../../db');
 const { requireAuth } = require('../../middleware/auth');
+const { linkLiveStatus } = require('../../lib/examControl');
 
 const router = express.Router();
 router.use(requireAuth);
 
-function liveStatus(link) {
-  if (link.status === 'REVOKED') return 'REVOKED';
-  if (link.status === 'USED') return 'USED';
-  if (new Date(link.expires_at) < new Date()) return 'EXPIRED';
-  return link.status;
-}
+// Single source of truth, so DISABLED links and UTC timestamps are handled
+// the same way everywhere.
+function liveStatus(link) { return linkLiveStatus(link); }
 
 router.get('/', (req, res) => {
   const rows = db.prepare(

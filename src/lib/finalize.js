@@ -13,21 +13,31 @@ const db = require('../db');
 const { generateId } = require('./tokens');
 const { gradeAllCalc } = require('./grading');
 const { audit } = require('./audit');
+const { parseDbDate } = require('./timeutil');
 
 // Required lazily, not at module load: googleSheets -> sheetData -> finalize is
 // a cycle, and resolving it at import time would leave one of the three holding
 // a half-initialised module. At call time every module is fully loaded.
 function googleSheets() { return require('./googleSheets'); }
 
-const SUBMISSION_TYPES = { MANUAL: 'MANUAL', AUTO: 'AUTO_SUBMITTED' };
-const REASONS = { CANDIDATE: 'CANDIDATE_SUBMITTED', TIME_EXPIRED: 'TIME_EXPIRED' };
+const SUBMISSION_TYPES = { MANUAL: 'MANUAL', AUTO: 'AUTO_SUBMITTED', TERMINATED: 'TERMINATED' };
+const REASONS = {
+  CANDIDATE: 'CANDIDATE_SUBMITTED',
+  TIME_EXPIRED: 'TIME_EXPIRED',
+  TERMINATED_BY_ADMIN: 'TERMINATED_BY_ADMIN',
+};
 
 function nowIso() { return new Date().toISOString(); }
 
-/** Has the server-side deadline passed for this session? */
+/**
+ * Has the server-side deadline passed for this session?
+ * A paused assessment can never be expired — its countdown is frozen and the
+ * paused time is credited back on resume (see src/lib/examControl.js).
+ */
 function isExpired(session, at) {
   if (!session || !session.expires_at) return false;
-  return new Date(session.expires_at).getTime() <= (at ? at.getTime() : Date.now());
+  if (session.status === 'IN_PROGRESS' && session.paused_at) return false;
+  return parseDbDate(session.expires_at).getTime() <= (at ? at.getTime() : Date.now());
 }
 
 /**
@@ -37,8 +47,12 @@ function isExpired(session, at) {
  */
 function displayStatus(session) {
   if (!session) return null;
-  if (session.status !== 'SUBMITTED') return session.status;
-  return session.submission_type === SUBMISSION_TYPES.AUTO ? 'AUTO_SUBMITTED' : 'SUBMITTED';
+  if (session.status !== 'SUBMITTED') {
+    return (session.status === 'IN_PROGRESS' && session.paused_at) ? 'PAUSED' : session.status;
+  }
+  if (session.submission_type === SUBMISSION_TYPES.TERMINATED) return 'TERMINATED';
+  if (session.submission_type === SUBMISSION_TYPES.AUTO) return 'AUTO_SUBMITTED';
+  return 'SUBMITTED';
 }
 
 // An answer counts as answered only if the candidate actually put something in
@@ -96,8 +110,11 @@ function buildIntegrity(sessionId) {
  */
 function finalizeSession(sessionId, options = {}) {
   const auto = !!options.auto;
-  const submissionType = auto ? SUBMISSION_TYPES.AUTO : SUBMISSION_TYPES.MANUAL;
-  const submissionReason = options.reason || (auto ? REASONS.TIME_EXPIRED : REASONS.CANDIDATE);
+  const submissionType = options.type
+    || (auto ? SUBMISSION_TYPES.AUTO : SUBMISSION_TYPES.MANUAL);
+  const submissionReason = options.reason
+    || (auto ? REASONS.TIME_EXPIRED : REASONS.CANDIDATE);
+  const terminated = submissionType === SUBMISSION_TYPES.TERMINATED;
 
   // Everything below happens in ONE transaction. The conditional UPDATE is the
   // first statement and acts as the lock: only the caller whose UPDATE actually
@@ -161,9 +178,13 @@ function finalizeSession(sessionId, options = {}) {
       integrity.largestPaste, integrity.risk, JSON.stringify(integrity.evidence));
 
     audit({
-      userName: auto ? 'System (automatic submission)' : 'Candidate (public exam)',
-      role: auto ? 'SYSTEM' : 'CANDIDATE',
-      action: auto ? 'ASSESSMENT_AUTO_SUBMITTED' : 'Assessment submitted',
+      userName: terminated
+        ? (options.actorName || 'Administrator')
+        : auto ? 'System (automatic submission)' : 'Candidate (public exam)',
+      role: terminated ? 'ADMIN' : auto ? 'SYSTEM' : 'CANDIDATE',
+      action: terminated
+        ? 'ASSESSMENT_TERMINATED'
+        : auto ? 'ASSESSMENT_AUTO_SUBMITTED' : 'Assessment submitted',
       target: candidate.code,
       newValue: {
         candidate: candidate.code,
@@ -216,6 +237,7 @@ function finalizeExpiredSessions(options = {}) {
   const expired = db.prepare(
     `SELECT id FROM assessment_sessions
       WHERE status = 'IN_PROGRESS'
+        AND paused_at IS NULL
         AND expires_at IS NOT NULL
         AND datetime(expires_at) <= datetime('now')`
   ).all();

@@ -95,6 +95,8 @@ app.use('/api/admin/reports', require('./routes/admin/reports'));
 // Mounted before the catch-all misc router so its Super-Admin-only guard
 // applies to every /settings/data-management path.
 app.use('/api/admin/settings/data-management', require('./routes/admin/dataManagement'));
+app.use('/api/admin/users', require('./routes/admin/users'));
+app.use('/api/admin/exam-control', require('./routes/admin/examControl'));
 app.use('/api/admin', require('./routes/admin/misc'));
 app.use('/api/exam', require('./routes/exam'));
 

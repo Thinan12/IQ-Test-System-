@@ -5,6 +5,7 @@
 const db = require('../db');
 const { evaluateEligibility } = require('./eligibility');
 const { displayStatus } = require('./finalize');
+const { parseDbDate } = require('./timeutil');
 
 function cell(v) {
   if (v === null || v === undefined) return '';
@@ -131,7 +132,7 @@ function buildAssessmentResultsSheet(includeDemo) {
     ).get(s.id);
     const avgQuestionSeconds = timing.answered ? round1(timing.total / timing.answered) : '';
     const durationMinutes = s.started_at && s.submitted_at
-      ? round1((new Date(s.submitted_at) - new Date(s.started_at)) / 60000)
+      ? round1((parseDbDate(s.submitted_at) - parseDbDate(s.started_at)) / 60000)
       : '';
     return row([
       s.code,

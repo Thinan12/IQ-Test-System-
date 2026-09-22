@@ -187,6 +187,73 @@ if a dead `href="#"` appears, or if an action button loses its loading state.
 - **Views fail visibly.** A view whose data fails to load shows an error with a
   Retry button instead of hanging on `Loading…`.
 
+## Administrative controls
+
+**Candidate lifecycle.** Edit details (audited), Archive (reversible, hides from
+the working list, keeps every record), Restore, and Permanent Delete. Deletion
+is Super Admin only, requires the candidate's code typed back plus the admin's
+password, is refused while an assessment is `IN_PROGRESS` or `PAUSED`, and
+records the counts of everything it removed.
+
+**Invitation links.** Generate, Copy, Revoke (permanent), Disable (reversible),
+Re-enable, and Extend expiry. Expiry is configurable with presets
+(5/10/15/20/30/60/custom); **already-issued links keep the expiry they were
+created with**. A disabled link tells the candidate it is temporarily disabled
+rather than pretending it never existed.
+
+**Live exam control** (`Admin → Live Assessments`) shows every running
+assessment with time remaining, progress, status, link status, integrity risk
+and last activity, and offers only the actions valid for that state:
+
+| Action | Effect |
+| --- | --- |
+| Pause | Candidate is locked out (HTTP 423) and **the countdown freezes** |
+| Resume | Deadline is pushed out by exactly the paused duration — no time is lost |
+| Change time | Sets a **new total duration**, measured from when the candidate started |
+| Extend time | **Adds** minutes to the current deadline |
+| Terminate | Locks the assessment immediately, marked from the answers already saved |
+
+Pause policy is *freeze and credit back*. A paused assessment is never
+auto-submitted: `isExpired()` returns false while paused and the background
+sweep skips it, so an administrator can pause indefinitely without the clock
+running out underneath the candidate. Terminate goes through the same single
+finalizer as every other ending, so it cannot race a concurrent submission.
+Every one of these is audited.
+
+**Users** (`Admin → Users`, Super Admin only): create, edit, enable/disable,
+change role and reset password across all six roles. Passwords are bcrypt-hashed
+and no route ever returns a hash. A generated reset password is shown exactly
+once and never written to the audit log. The last active Super Admin cannot be
+demoted or disabled, and nobody can disable their own account.
+
+## Data display rules
+
+A NULL score means *this has not happened yet*; a 0 means *this was marked and
+scored zero*. Conflating them would tell HR a candidate failed a section nobody
+has marked. `src/lib/display.js` is the single source of these labels:
+
+| State | Shown as |
+| --- | --- |
+| Written score not yet marked | `Not graded` |
+| Interview not yet held | `Not completed` |
+| Final not yet computable | `Not calculated` |
+| Question never answered | `Not answered` |
+| Genuinely scored zero | `0/30` |
+
+Spreadsheet cells keep a real 0 as the number `0` and leave a missing mark
+blank, so Excel sorts and sums correctly without inventing zeros.
+
+**Encoding.** CSV exports start with a UTF-8 BOM and use CRLF so Excel detects
+UTF-8 and renders Lao correctly. PDFs embed Noto Sans Lao (SIL Open Font
+License, `src/assets/`) — PDFKit's built-in fonts are Latin-only and would
+render Lao as blank boxes. Excel and Google Sheets carry Unicode natively.
+
+**Timestamps.** SQLite's `datetime('now')` writes `YYYY-MM-DD HH:MM:SS` in UTC
+with no timezone marker, and JavaScript parses that shape as *local* time — which
+silently shifted 14 stored columns by the server's UTC offset (7 hours in Laos)
+everywhere they were displayed or used in arithmetic. `src/lib/timeutil.js`
+(and its counterpart in both SPAs) normalises both shapes to the same instant.
+
 ## Deployment
 
 See **[RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md)** for the exact Railway
@@ -315,6 +382,9 @@ src/
     eligibility.js         eligibility rule engine
     audit.js              audit log writer
     finalize.js           the single, atomic, idempotent assessment finalizer
+    examControl.js        pause/resume/terminate, exam time, link enable/disable
+    display.js            NULL-vs-zero presentation rules shared by every export
+    timeutil.js           parses SQLite and ISO timestamps as the same instant
     dataManagement.js     statistics, demo fixtures, transactional candidate deletion
     sheetData.js          builds the seven HR reporting sheets from SQLite (no network)
     googleSheets.js       Google Sheets API client, sync + pending-retry logic
@@ -336,6 +406,8 @@ test/
   auto_submit.sh           sections 1-8 - auto-submit on time expiry
   ui_wiring.js             static: no dead buttons, guards + error handling present
   ui_actions.sh            behavioural: the operation behind every control
+  ui_browser.js/.sh        real Chromium driving the actual admin UI (opt-in)
+  admin_controls.sh        candidate/link/exam-time/user controls + NULL-vs-zero
   deployment.sh            sections 9-15 - volume path, seeding, health, CORS, Node
   multi_candidate.sh       section 19 - three candidates, three sessions, no bleed
   mobile_markup.sh         section 20 - static mobile checks (device testing is manual)

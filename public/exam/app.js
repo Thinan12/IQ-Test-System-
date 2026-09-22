@@ -4,6 +4,14 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&lt;'[0] === '&' ? '&amp;' : c }[c] || ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
 function toast(msg) { let w = $('.toast-wrap'); if (!w) { w = document.createElement('div'); w.className = 'toast-wrap'; document.body.appendChild(w); } const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; w.appendChild(t); setTimeout(() => t.remove(), 2600); }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+// A timestamp with no timezone marker is UTC (SQLite's datetime() shape);
+// JavaScript would otherwise read it as local time and skew the countdown.
+function parseDbDate(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const s = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(s)) return new Date(s.replace(' ', 'T') + 'Z');
+  return new Date(s);
+}
 
 const TOKEN = location.pathname.split('/').filter(Boolean)[1] || '';
 const LS_KEY = 'lalco_exam_' + TOKEN;
@@ -16,7 +24,7 @@ async function exam(path, opts = {}) {
   return data;
 }
 
-let STATE = { step: 'loading', questions: [], idx: 0, expiresAt: null, timerInterval: null, integrity: { pasteEvents: 0, focusChanges: 0, largestPaste: 0 } };
+let STATE = { step: 'loading', questions: [], idx: 0, expiresAt: null, timerInterval: null, pausePoll: null, integrity: { pasteEvents: 0, focusChanges: 0, largestPaste: 0 } };
 
 function shell(inner, opts = {}) {
   document.title = 'LALCO Assessment';
@@ -34,6 +42,8 @@ async function boot() {
   try {
     const info = await exam('');
     if (info.session && info.session.status === 'AUTO_SUBMITTED') return renderTimeExpired(info.session);
+    if (info.session && info.session.status === 'TERMINATED') return renderTerminated(info.session);
+    if (info.session && (info.session.status === 'PAUSED' || info.session.paused)) return renderPaused(info.session);
     if (info.session && info.session.status === 'SUBMITTED') return renderDone(info.session.submittedAt);
     if (info.session && info.session.status === 'IN_PROGRESS') { STATE.expiresAt = info.session.scheduledEndAt || info.session.expiresAt; return renderQuestionFlow(info); }
     renderInstructions(info);
@@ -41,6 +51,7 @@ async function boot() {
     // The server finalizes an expired assessment on any request, so this is the
     // normal path for a candidate who reopens the link after time ran out.
     if (e.data && e.data.autoSubmitted) return renderTimeExpired(e.data);
+    if (e.status === 423 || (e.data && e.data.paused)) return renderPaused(e.data || {});
     shell(`<div style="text-align:center;padding-top:60px;"><h2>Assessment link unavailable</h2><p class="muted">${esc(e.data && e.data.error || e.message)}</p></div>`);
   }
 }
@@ -97,7 +108,7 @@ function startTimer() {
   clearInterval(STATE.timerInterval);
   STATE.timerInterval = setInterval(() => {
     const el = $('#timer'); if (!el) return;
-    const remaining = Math.max(0, Math.floor((new Date(STATE.expiresAt) - Date.now()) / 1000));
+    const remaining = Math.max(0, Math.floor((parseDbDate(STATE.expiresAt) - Date.now()) / 1000));
     el.textContent = String(Math.floor(remaining / 60)).padStart(2, '0') + ':' + String(remaining % 60).padStart(2, '0');
     if (remaining < 120) el.classList.add('low');
     if (remaining <= 0) {
@@ -163,9 +174,11 @@ async function showQuestion() {
     questionStartedAt = Date.now();
     try { await exam('/answer', { method: 'POST', body: JSON.stringify({ questionId: q.id, answer: collectAnswer(), timeSpentDeltaSeconds: deltaSeconds }) }); }
     catch (e) {
-      // 410 means the server's deadline passed and it finalized the assessment
-      // while the candidate was still typing. Show that, don't ask them to act.
+      // 410: the server's deadline passed and it finalized the assessment while
+      // the candidate was typing. 423: an administrator paused it. Either way,
+      // show the real state rather than asking the candidate to do something.
       if (e.status === 410) { renderTimeExpired(e.data || {}); }
+      else if (e.status === 423) { renderPaused(e.data || {}); }
     }
   }
   const debouncedSave = debounce(saveAnswer, 500);
@@ -272,6 +285,39 @@ async function autoSubmit() {
   } finally {
     SUBMITTING = false;
   }
+}
+
+// Paused by an administrator. The countdown is frozen server-side, so the
+// candidate loses nothing by waiting; this screen polls until it resumes.
+function renderPaused(info) {
+  info = info || {};
+  clearInterval(STATE.timerInterval);
+  STATE.step = 'paused';
+  const left = info.remainingSeconds != null
+    ? `<p class="faint" style="margin-top:10px;">Time remaining when paused: ${Math.floor(info.remainingSeconds / 60)}m ${info.remainingSeconds % 60}s — it is frozen and will not run down.</p>`
+    : '';
+  shell(`<div style="text-align:center;padding-top:30px;">
+    <div style="font-size:44px;margin-bottom:10px;">⏸</div>
+    <h2>Assessment paused</h2>
+    <p class="muted" style="margin-top:8px;">An administrator has paused your assessment.</p>
+    <p class="muted" style="margin-top:6px;">Your answers are saved and your remaining time is frozen. Please wait — this page will continue automatically.</p>
+    ${left}
+  </div>`);
+  // Poll gently until an administrator resumes it.
+  clearTimeout(STATE.pausePoll);
+  STATE.pausePoll = setTimeout(boot, 7000);
+}
+
+function renderTerminated(info) {
+  clearInterval(STATE.timerInterval);
+  STATE.step = 'done';
+  shell(`<div style="text-align:center;padding-top:30px;">
+    <div style="font-size:44px;margin-bottom:10px;">■</div>
+    <h2>Assessment ended</h2>
+    <p class="muted" style="margin-top:8px;">This assessment was ended by an administrator. The answers you had saved have been submitted.</p>
+    <p class="muted" style="margin-top:6px;">Please speak to the recruitment team if you have any questions.</p>
+    <p class="faint" style="margin-top:14px;">${info && info.submittedAt ? 'Ended ' + new Date(info.submittedAt).toLocaleString() : ''}</p>
+  </div>`);
 }
 
 function renderTimeExpired(info) {

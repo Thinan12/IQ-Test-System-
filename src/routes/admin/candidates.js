@@ -6,6 +6,10 @@ const { gradeAllCalc } = require('../../lib/grading');
 const { auditFromReq } = require('../../lib/audit');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { displayStatus } = require('../../lib/finalize');
+const { parseDbDate } = require('../../lib/timeutil');
+const bcrypt = require('bcryptjs');
+const { linkLiveStatus, sessionLiveStatus } = require('../../lib/examControl');
+const { deleteCandidateData } = require('../../lib/dataManagement');
 const { nextCandidateCode } = require('../../lib/dataManagement');
 
 const router = express.Router();
@@ -54,12 +58,18 @@ function candidateSummary(c) {
     pass: scores ? !!scores.pass : null,
     aiRisk: integrity ? integrity.risk_level : 'Low',
     isDemo: !!c.is_demo,
+    archived: !!c.archived,
+    archivedAt: c.archived_at || null,
   };
 }
 
 // ---- LIST ----
 router.get('/', (req, res) => {
-  const rows = db.prepare('SELECT * FROM candidates ORDER BY created_at DESC').all();
+  // Archived candidates are hidden from the working list unless asked for.
+  const showArchived = String(req.query.archived || '') === '1';
+  const rows = showArchived
+    ? db.prepare('SELECT * FROM candidates WHERE archived = 1 ORDER BY archived_at DESC').all()
+    : db.prepare('SELECT * FROM candidates WHERE archived = 0 ORDER BY created_at DESC').all();
   let list = rows.map(candidateSummary);
   const { q, position, branch, type, status, eligibility } = req.query;
   if (q) {
@@ -147,7 +157,8 @@ router.get('/:id', (req, res) => {
     },
     eligibility: elig,
     session: decorateSession(session),
-    links,
+    liveSessionStatus: sessionLiveStatus(session),
+    links: links.map((l) => ({ ...l, liveStatus: linkLiveStatus(l) })),
     scores,
     integrity,
     answers,
@@ -169,6 +180,69 @@ router.patch('/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (req, 
   db.prepare(`UPDATE candidates SET ${setClause}, updated_at = datetime('now') WHERE id = @id`).run({ ...updates, id: c.id });
   auditFromReq(req, 'Candidate updated', c.code, c, updates);
   res.json({ ok: true });
+});
+
+// ---- ARCHIVE / RESTORE / PERMANENT DELETE ----
+// Archiving is reversible and keeps every record. Permanent deletion is Super
+// Admin only, refuses to run while an assessment is still live, and is audited
+// with the counts of everything it removed.
+router.post('/:id/archive', requireRole('SUPER_ADMIN', 'HR_ADMIN'), (req, res) => {
+  const c = db.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Candidate not found.' });
+  if (c.archived) return res.status(409).json({ error: 'This candidate is already archived.' });
+  db.prepare(`UPDATE candidates SET archived = 1, archived_at = datetime('now'), archived_by = ?, updated_at = datetime('now') WHERE id = ?`)
+    .run(req.user.name, c.id);
+  auditFromReq(req, 'CANDIDATE_ARCHIVED', c.code, { archived: 0 }, { archived: 1, by: req.user.name });
+  res.json({ ok: true, archived: true });
+});
+
+router.post('/:id/restore', requireRole('SUPER_ADMIN', 'HR_ADMIN'), (req, res) => {
+  const c = db.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Candidate not found.' });
+  if (!c.archived) return res.status(409).json({ error: 'This candidate is not archived.' });
+  db.prepare(`UPDATE candidates SET archived = 0, archived_at = NULL, archived_by = NULL, updated_at = datetime('now') WHERE id = ?`).run(c.id);
+  auditFromReq(req, 'CANDIDATE_RESTORED', c.code, { archived: 1 }, { archived: 0, by: req.user.name });
+  res.json({ ok: true, archived: false });
+});
+
+router.delete('/:id', requireRole('SUPER_ADMIN'), (req, res) => {
+  const c = db.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Candidate not found.' });
+
+  // A candidate mid-assessment (including one paused by an admin) must not
+  // vanish underneath them.
+  const live = db.prepare(
+    `SELECT id, paused_at FROM assessment_sessions WHERE candidate_id = ? AND status = 'IN_PROGRESS'`
+  ).get(c.id);
+  if (live) {
+    return res.status(409).json({
+      error: live.paused_at
+        ? 'This candidate has a PAUSED assessment. Resume and finish, or terminate it, before deleting.'
+        : 'This candidate has an IN_PROGRESS assessment. Terminate it before deleting.',
+    });
+  }
+
+  const confirmation = String((req.body || {}).confirmation || '').trim();
+  if (confirmation !== c.code) {
+    return res.status(400).json({ error: `Type the candidate code (${c.code}) to confirm permanent deletion.` });
+  }
+  const password = String((req.body || {}).password || '');
+  const actor = db.prepare('SELECT * FROM users WHERE id = ? AND active = 1').get(req.user.id);
+  if (!actor || actor.role !== 'SUPER_ADMIN' || !password || !bcrypt.compareSync(password, actor.password_hash)) {
+    auditFromReq(req, 'CANDIDATE_DELETE_DENIED', c.code, null, { reason: 'password re-check failed' });
+    return res.status(401).json({ error: 'Super Admin password is required to permanently delete a candidate.' });
+  }
+
+  const removed = deleteCandidateData({ candidateIds: [c.id] });
+  auditFromReq(req, 'CANDIDATE_DELETED', c.code, { candidate: c.full_name }, {
+    performedBy: req.user.name,
+    candidate: c.code,
+    name: c.full_name,
+    assessmentsDeleted: removed.assessments,
+    answersDeleted: removed.answers,
+    linksDeleted: removed.links,
+  });
+  res.json({ ok: true, deleted: removed, message: `${c.code} and all of their assessment data were permanently deleted.` });
 });
 
 // ---- ASSESSMENT LINKS ----
@@ -250,7 +324,7 @@ function decorateSession(session) {
   if (!session) return null;
   let durationLabel = null;
   if (session.started_at && session.submitted_at) {
-    const minutes = (new Date(session.submitted_at) - new Date(session.started_at)) / 60000;
+    const minutes = (parseDbDate(session.submitted_at) - parseDbDate(session.started_at)) / 60000;
     durationLabel = `${Math.round(minutes * 10) / 10} min of ${session.duration_minutes} min allowed`;
   }
   return {

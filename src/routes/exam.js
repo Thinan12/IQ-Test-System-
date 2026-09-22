@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { generateId } = require('../lib/tokens');
 const { finalizeSession, finalizeIfExpired, isExpired, displayStatus } = require('../lib/finalize');
+const { isPaused, linkLiveStatus, remainingSeconds } = require('../lib/examControl');
 const { examLimiter } = require('../middleware/auth');
 const { audit } = require('../lib/audit');
 
@@ -39,9 +40,7 @@ function getLinkByToken(token) {
   return db.prepare('SELECT * FROM assessment_links WHERE token = ?').get(token);
 }
 function liveLinkStatus(link) {
-  if (link.status === 'REVOKED') return 'REVOKED';
-  if (new Date(link.expires_at) < new Date() && link.status === 'ACTIVE') return 'EXPIRED';
-  return link.status;
+  return linkLiveStatus(link);
 }
 function logAccess(linkId, success, req) {
   db.prepare('INSERT INTO link_access_log (id, link_id, success, ip, user_agent) VALUES (?,?,?,?,?)')
@@ -70,10 +69,15 @@ router.get('/:token', (req, res) => {
   }
   const status = liveLinkStatus(link);
   if (status !== 'ACTIVE') {
-    if (status === 'EXPIRED' && link.status === 'ACTIVE') db.prepare(`UPDATE assessment_links SET status='EXPIRED' WHERE id=?`).run(link.id);
+    if (status === 'EXPIRED' && link.status === 'ACTIVE' && !link.disabled_at) db.prepare(`UPDATE assessment_links SET status='EXPIRED' WHERE id=?`).run(link.id);
     logAccess(link.id, false, req);
-    const messages = { EXPIRED: 'This assessment invitation has expired.', REVOKED: 'This assessment invitation is no longer valid.', USED: 'This assessment invitation has already been used.' };
-    return res.status(410).json({ error: messages[status] || 'This assessment invitation is not currently active.' });
+    const messages = {
+      EXPIRED: 'This assessment invitation has expired.',
+      REVOKED: 'This assessment invitation is no longer valid.',
+      DISABLED: 'This assessment invitation has been temporarily disabled. Please contact the recruitment team.',
+      USED: 'This assessment invitation has already been used.',
+    };
+    return res.status(410).json({ error: messages[status] || 'This assessment invitation is not currently active.', linkStatus: status });
   }
   logAccess(link.id, true, req);
   respondWithCandidateContext(req, res, link, null);
@@ -96,6 +100,8 @@ function respondWithCandidateContext(req, res, link, session) {
       // submission, AUTO_SUBMITTED when the server finalized it on time expiry.
       status: displayStatus(session),
       lifecycleStatus: session.status,
+      paused: isPaused(session),
+      remainingSeconds: remainingSeconds(session),
       reason: session.submission_reason || null,
       autoSubmitted: session.submission_type === 'AUTO_SUBMITTED',
       startedAt: session.started_at,
@@ -191,6 +197,16 @@ function requireActiveSession(req, res, next) {
       status: displayStatus(session),
       reason: session.submission_reason || null,
       submittedAt: session.submitted_at,
+    });
+  }
+
+  // Paused by an administrator: progress stops and the countdown is frozen.
+  if (isPaused(session)) {
+    return res.status(423).json({
+      error: 'Your assessment has been paused by the administrator. Please wait — your answers and remaining time are safe.',
+      paused: true,
+      status: 'PAUSED',
+      remainingSeconds: remainingSeconds(session),
     });
   }
 

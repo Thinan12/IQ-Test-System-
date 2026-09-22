@@ -51,9 +51,18 @@ function getDataStats() {
 // Stage the candidates to remove in a temp table. This avoids SQLite's bound
 // parameter limit entirely, and keeps every subsequent DELETE inside the same
 // transaction working off one consistent target list.
-function stageTargets(demoOnly) {
+function stageTargets(options) {
+  const demoOnly = !!(options && options.demoOnly);
+  const candidateIds = options && Array.isArray(options.candidateIds) ? options.candidateIds : null;
   db.exec('CREATE TEMP TABLE IF NOT EXISTS _delete_targets (candidate_id TEXT PRIMARY KEY)');
   db.exec('DELETE FROM _delete_targets');
+  if (candidateIds) {
+    // An explicit set (e.g. deleting one candidate). Inserted row by row so the
+    // number of ids can never hit SQLite's bound-parameter limit.
+    const insert = db.prepare('INSERT OR IGNORE INTO _delete_targets (candidate_id) VALUES (?)');
+    candidateIds.forEach((id) => insert.run(id));
+    return;
+  }
   db.exec(
     'INSERT INTO _delete_targets (candidate_id) SELECT id FROM candidates' + (demoOnly ? ' WHERE is_demo = 1' : '')
   );
@@ -81,13 +90,12 @@ function countStagedRows() {
  * Delete candidate data in ONE transaction. If anything throws, better-sqlite3
  * rolls the whole thing back — there is no partially deleted candidate.
  *
- * @param {{demoOnly?: boolean}} options
+ * @param {{demoOnly?: boolean, candidateIds?: string[]}} options
  * @returns {{candidates, assessments, answers, links, scores, integrityEvents, byTable}}
  */
 function deleteCandidateData(options = {}) {
-  const demoOnly = !!options.demoOnly;
   const run = db.transaction(() => {
-    stageTargets(demoOnly);
+    stageTargets(options);
     const before = countStagedRows();
     // Reverse order is not needed: CANDIDATE_DATA_TABLES is already FK-safe,
     // but the target list itself is a snapshot so ordering stays stable.
@@ -112,9 +120,8 @@ function deleteCandidateData(options = {}) {
 
 /** What a deletion *would* remove, without removing it. */
 function previewDeletion(options = {}) {
-  const demoOnly = !!options.demoOnly;
   const run = db.transaction(() => {
-    stageTargets(demoOnly);
+    stageTargets(options);
     const counts = countStagedRows();
     db.exec('DELETE FROM _delete_targets');
     return counts;

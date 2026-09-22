@@ -28,6 +28,33 @@ ensureColumn('assessment_sessions', 'submission_reason', 'TEXT');
 ensureColumn('assessment_sessions', 'answered_count', 'INTEGER');
 ensureColumn('assessment_sessions', 'unanswered_count', 'INTEGER');
 
+// Priority 1 — candidate archiving.
+ensureColumn('candidates', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('candidates', 'archived_at', 'TEXT');
+ensureColumn('candidates', 'archived_by', 'TEXT');
+
+// Priority 2 — link disable / re-enable / expiry extension.
+ensureColumn('assessment_links', 'revoked_by', 'TEXT');
+ensureColumn('assessment_links', 'disabled_at', 'TEXT');
+ensureColumn('assessment_links', 'disabled_by', 'TEXT');
+ensureColumn('assessment_links', 'expiry_extended_by', 'TEXT');
+ensureColumn('assessment_links', 'expiry_extended_at', 'TEXT');
+
+// Priority 3 — pause / resume / time adjustment.
+ensureColumn('assessment_sessions', 'paused_at', 'TEXT');
+ensureColumn('assessment_sessions', 'paused_by', 'TEXT');
+ensureColumn('assessment_sessions', 'total_paused_seconds', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('assessment_sessions', 'time_adjusted_by', 'TEXT');
+ensureColumn('assessment_sessions', 'time_adjusted_at', 'TEXT');
+ensureColumn('assessment_sessions', 'original_expires_at', 'TEXT');
+
+// Note: `status` on both tables keeps its original CHECK constraint. Paused
+// sessions and disabled links are represented by their own nullable columns
+// above, and the status shown to users is computed (see src/lib/examControl.js).
+// SQLite cannot alter a CHECK in place, and rebuilding these tables on a live
+// database would put real candidate data at risk for no benefit.
+
+
 // Ensure singleton config rows exist
 db.prepare(`INSERT OR IGNORE INTO eligibility_rules (id) VALUES (1)`).run();
 db.prepare(`INSERT OR IGNORE INTO settings (id) VALUES (1)`).run();
