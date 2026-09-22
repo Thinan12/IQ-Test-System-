@@ -44,6 +44,9 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(express.json({ limit: '1mb' }));
 
 // ---- API routes ----
+// Health check for Railway deployment verification — must remain
+// unauthenticated and mounted before any protected routes.
+app.use('/api/health', require('./routes/health'));
 app.use('/api/admin/auth', require('./routes/admin/auth'));
 app.use('/api/admin/candidates', require('./routes/admin/candidates'));
 app.use('/api/admin/questions', require('./routes/admin/questions'));
