@@ -1,0 +1,14 @@
+# Normalise line endings so a checkout on Linux (Railway) is always correct.
+* text=auto eol=lf
+
+# Shell scripts MUST keep LF — CRLF breaks the shebang on Linux
+# ("bad interpreter: /bin/bash^M").
+*.sh text eol=lf
+
+# Binary-ish assets git should not touch.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary
+*.db binary
+*.sqlite binary

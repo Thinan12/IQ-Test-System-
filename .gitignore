@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit these.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+credentials.json
+service-account.json
+service-account*.json
+*service-account*.json
+gcp-credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+
+# ---------------------------------------------------------------------------
+# Databases and backups — candidate data must never reach the repository.
+# ---------------------------------------------------------------------------
+data/
+backups/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+
+# ---------------------------------------------------------------------------
+# Dependencies and build output
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+build/
+.cache/
+
+# ---------------------------------------------------------------------------
+# Logs, test artefacts and temporary files
+# ---------------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-error.log*
+logs/
+coverage/
+tmp/
+temp/
+*.tmp
+*.csv
+*.xlsx
+*.pdf
+!MOBILE_TEST_CHECKLIST.md
+
+# ---------------------------------------------------------------------------
+# Editor / OS noise
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

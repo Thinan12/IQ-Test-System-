@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LALCO Assessment</title>
+<link rel="stylesheet" href="/shared.css">
+<style>
+body{padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);}
+.portal{min-height:100vh; display:flex; flex-direction:column;}
+.ptop{position:sticky; top:0; z-index:5; background:var(--paper-raised); border-bottom:1px solid var(--line); padding:12px 16px;}
+.ptop .row1{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;}
+.pbrand{display:flex; align-items:center; gap:8px; font-family:Georgia,serif; font-weight:600; font-size:14px;}
+.pbrand .mark{width:26px; height:26px; border-radius:6px; background:linear-gradient(155deg,var(--gold),#8a6a22);}
+.timer{font-family:Georgia,serif; font-weight:700; font-size:18px; font-variant-numeric:tabular-nums;}
+.timer.low{color:var(--danger);}
+.pbody{flex:1; max-width:640px; margin:0 auto; width:100%; padding:20px 16px 110px;}
+.qopt{display:flex; align-items:flex-start; gap:11px; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:9px; cursor:pointer; background:var(--paper-raised);}
+.qopt input{width:20px; height:20px; margin-top:1px; flex-shrink:0;}
+.qopt.checked{border-color:var(--gold); background:var(--warning-bg);}
+.pnav{position:sticky; bottom:0; background:var(--paper-raised); border-top:1px solid var(--line); padding:12px 16px; display:flex; gap:10px;}
+.pnav .btn{flex:1; justify-content:center; padding:13px; min-height:48px;}
+/* iOS Safari zooms the whole page in when a focused field's font-size is below
+   16px. During a timed exam that zoom is disorienting and easy to get stuck in,
+   so every field the candidate types into stays at 16px. */
+input,select,textarea{font-size:16px;}
+/* Comfortable touch targets on a phone. */
+.qopt{min-height:48px; align-items:center;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="/exam/app.js"></script>
+</body>
+</html>
