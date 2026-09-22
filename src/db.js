@@ -29,6 +29,8 @@ ensureColumn('assessment_sessions', 'answered_count', 'INTEGER');
 ensureColumn('assessment_sessions', 'unanswered_count', 'INTEGER');
 
 // Priority 1 — candidate archiving.
+ensureColumn('users', 'token_version', 'INTEGER NOT NULL DEFAULT 0');
+
 ensureColumn('candidates', 'archived', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('candidates', 'archived_at', 'TEXT');
 ensureColumn('candidates', 'archived_by', 'TEXT');

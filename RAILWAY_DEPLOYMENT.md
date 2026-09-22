@@ -52,7 +52,8 @@ Optional:
 | `AUTO_SUBMIT_SWEEP_SECONDS` | `60` | How often abandoned expired assessments are finalized. Minimum 5. |
 | `EXAM_RATE_LIMIT_PER_MINUTE` | `300` | Raise for a large sitting behind one office IP. |
 | `LOGIN_RATE_LIMIT_PER_15_MIN` | `20` | Admin login attempts per IP. |
-| `DEMO_PASSWORD` | `ChangeMe123!` | Password given to seeded admin accounts. **Set this before seeding.** |
+| `DEMO_PASSWORD` | `ChangeMe123!` | Password given to seeded admin accounts. **Set this before seeding, and rotate every account afterwards** — the default is published in this repository and is rejected by the password policy for any new password. |
+| `JWT_SECRET_PREVIOUS` | *(unset)* | Only during a secret rotation — see section 2b. |
 
 Google Sheets (only if you use it — otherwise leave all three unset and the app
 behaves exactly as before):
@@ -65,6 +66,32 @@ behaves exactly as before):
 | `GOOGLE_SYNC_ON_SUBMIT` | `false` by default. `true` syncs after each submission (never blocks the exam). |
 
 **Do not set** `ALLOW_INSECURE_HTTP` — it disables HTTPS enforcement.
+
+---
+
+## 2b. Rotating JWT_SECRET without disrupting an assessment
+
+The app accepts **two** signing secrets so a rotation never signs anybody out
+mid-exam.
+
+1. Generate a new secret:
+   `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+2. In Railway **Variables**, set both at once:
+   - `JWT_SECRET_PREVIOUS` = the *current* value of `JWT_SECRET`
+   - `JWT_SECRET` = the new value
+3. Redeploy. New sign-ins use the new secret; sessions issued under the old one
+   keep working until they expire (8 hours), so an assessment in progress is
+   unaffected.
+4. **After at least 8 hours**, delete `JWT_SECRET_PREVIOUS` and redeploy. Any
+   token still signed with the old secret is now rejected.
+
+The server refuses to start if `JWT_SECRET_PREVIOUS` equals `JWT_SECRET`, so a
+rotation that did not actually change anything fails loudly instead of looking
+like it worked. Never print or commit either value.
+
+To force everyone out immediately instead, reset each account's password —
+that bumps `users.token_version` and invalidates that account's sessions at
+once, without touching the secret.
 
 ---
 

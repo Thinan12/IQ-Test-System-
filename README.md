@@ -226,6 +226,53 @@ and no route ever returns a hash. A generated reset password is shown exactly
 once and never written to the audit log. The last active Super Admin cannot be
 demoted or disabled, and nobody can disable their own account.
 
+## Account security
+
+Admin passwords must be at least **14 characters** and use at least **three of
+four** character classes (lowercase, uppercase, digit, symbol). Passwords that
+are published in this repository — including the seeded default — are rejected
+outright, as are passwords containing the account name. Rules live in
+`src/lib/passwordPolicy.js` and apply to both account creation and reset.
+
+`Admin → Users → Reset password` generates a 20-character password from a
+CSPRNG, guaranteeing every class. It is returned **exactly once** so the
+administrator can hand it over, is bcrypt-hashed before storage, and is never
+written to the audit log — the audit record names who reset whose password and
+nothing more.
+
+**Sessions are invalidated** on password reset, role change and account
+disable. Each user row carries a `token_version` that is embedded in their JWT;
+raising it makes every token that account already holds fail on the next
+request. `requireAuth` also re-reads the account on every request, so a
+disabled account or a demotion takes effect immediately rather than lingering
+until the token expires. The role used for authorisation comes from the
+database, not from the token.
+
+**JWT rotation** is supported without disruption: set `JWT_SECRET` to the new
+value and `JWT_SECRET_PREVIOUS` to the old one, and tokens signed with either
+are accepted until the old sessions expire. See `RAILWAY_DEPLOYMENT.md` §2b.
+
+## Candidate identifier (LALCO ID)
+
+`candidates.code` is the human-readable business identifier shown on reports and
+typed by the candidate to verify their identity. It is generated automatically
+as `LALCO-YYYY-NNNNN`, and an administrator may instead supply their own when
+creating a candidate (for example `TEST-LIVE-001`).
+
+- Optional — omit it and one is generated, exactly as before.
+- Trimmed and uppercased; letters, digits, hyphen and underscore only, 3–32
+  characters, must start and end with a letter or digit. Internal spaces are
+  rejected rather than silently stripped.
+- Unique, enforced both by validation and by the UNIQUE index.
+- It can be corrected later, but **not once an assessment has been started** —
+  the candidate verifies with it and reports already carry it. Changes are
+  audited as `CANDIDATE_CODE_CHANGED`.
+- Follows existing candidate-management RBAC (Super Admin, HR Admin, Recruiter).
+
+**It is not a secret and never secures anything.** The invitation URL always
+uses the 32-byte random token from `src/lib/tokens.js`; the LALCO ID and the
+internal database id never appear in an exam URL.
+
 ## Data display rules
 
 A NULL score means *this has not happened yet*; a 0 means *this was marked and
@@ -385,6 +432,8 @@ src/
     examControl.js        pause/resume/terminate, exam time, link enable/disable
     display.js            NULL-vs-zero presentation rules shared by every export
     timeutil.js           parses SQLite and ISO timestamps as the same instant
+    passwordPolicy.js     admin password rules + CSPRNG generator
+    candidateCode.js      LALCO ID validation, normalisation and uniqueness
     dataManagement.js     statistics, demo fixtures, transactional candidate deletion
     sheetData.js          builds the seven HR reporting sheets from SQLite (no network)
     googleSheets.js       Google Sheets API client, sync + pending-retry logic

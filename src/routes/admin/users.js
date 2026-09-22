@@ -5,17 +5,23 @@
 // the two actions that can silently escalate access.
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const db = require('../../db');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { auditFromReq } = require('../../lib/audit');
 const { generateId } = require('../../lib/tokens');
+const { validatePassword, generatePassword, MIN_LENGTH } = require('../../lib/passwordPolicy');
 
 const router = express.Router();
 router.use(requireAuth, requireRole('SUPER_ADMIN'));
 
 const ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER', 'INTERVIEWER', 'EVALUATOR', 'MANAGER'];
-const MIN_PASSWORD = 10;
+const MIN_PASSWORD = MIN_LENGTH;
+
+// Raising token_version invalidates every session that account already holds
+// (see requireAuth). Used after a password reset, a role change or a disable.
+function invalidateSessions(userId) {
+  db.prepare('UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = ?').run(userId);
+}
 
 // Shape sent to the browser. password_hash is deliberately absent.
 function publicUser(u) {
@@ -26,6 +32,7 @@ function publicUser(u) {
     role: u.role,
     active: !!u.active,
     createdAt: u.created_at,
+    // password_hash and token_version are deliberately absent.
   };
 }
 
@@ -36,8 +43,9 @@ function countActiveSuperAdmins(excludingId) {
   return rows.filter((r) => r.id !== excludingId).length;
 }
 
-function validPassword(pw) {
-  return typeof pw === 'string' && pw.length >= MIN_PASSWORD;
+function passwordProblems(pw, email) {
+  const r = validatePassword(pw, { email });
+  return r.ok ? null : r.errors.join(' ');
 }
 
 router.get('/', (req, res) => {
@@ -55,9 +63,8 @@ router.post('/', (req, res) => {
   if (!name) return res.status(400).json({ error: 'Name is required.' });
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: 'A valid email address is required.' });
   if (!ROLES.includes(role)) return res.status(400).json({ error: 'Role must be one of: ' + ROLES.join(', ') });
-  if (!validPassword(b.password)) {
-    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters.` });
-  }
+  const pwProblem = passwordProblems(b.password, email);
+  if (pwProblem) return res.status(400).json({ error: pwProblem });
   if (db.prepare('SELECT id FROM users WHERE email = ?').get(email)) {
     return res.status(409).json({ error: 'An account with that email already exists.' });
   }
@@ -110,7 +117,9 @@ router.post('/:id/role', (req, res) => {
   }
 
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, user.id);
-  auditFromReq(req, 'USER_ROLE_CHANGED', user.email, { role: user.role }, { role });
+  // A privilege change must not leave an old session running at the old level.
+  invalidateSessions(user.id);
+  auditFromReq(req, 'USER_ROLE_CHANGED', user.email, { role: user.role }, { role, sessionsInvalidated: true });
   res.json({ ok: true, user: publicUser(findUser(user.id)) });
 });
 
@@ -126,6 +135,7 @@ router.post('/:id/active', (req, res) => {
     }
   }
   db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active ? 1 : 0, user.id);
+  if (!active) invalidateSessions(user.id); // a disabled account's session dies at once
   auditFromReq(req, active ? 'USER_ENABLED' : 'USER_DISABLED', user.email, { active: !!user.active }, { active });
   res.json({ ok: true, user: publicUser(findUser(user.id)) });
 });
@@ -140,24 +150,32 @@ router.post('/:id/reset-password', (req, res) => {
   let password = b.password;
   let generated = false;
   if (b.generate) {
-    password = crypto.randomBytes(9).toString('base64url'); // 12 chars, URL-safe
+    password = generatePassword(); // 20 chars, every class, CSPRNG
     generated = true;
   }
-  if (!validPassword(password)) {
-    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters.` });
-  }
+  const problem = passwordProblems(password, user.email);
+  if (problem) return res.status(400).json({ error: problem });
 
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(password, 12), user.id);
-  // The audit record names who reset whose password — never the password.
-  auditFromReq(req, 'USER_PASSWORD_RESET', user.email, null, { by: req.user.name, generated });
+  // Hash and invalidate in one transaction, so a failure can never leave the
+  // account with a new password but its old sessions still live.
+  db.transaction(() => {
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(password, 12), user.id);
+    invalidateSessions(user.id);
+  })();
+
+  // The audit record names who reset whose password, and never the password.
+  auditFromReq(req, 'USER_PASSWORD_RESET', user.email, null, {
+    by: req.user.name, generated, sessionsInvalidated: true,
+  });
   res.json({
     ok: true,
-    // A generated password is returned exactly once so the admin can pass it on;
-    // a chosen one is never echoed back.
+    // A generated password is returned exactly once so the admin can hand it
+    // over; a chosen one is never echoed back.
     generatedPassword: generated ? password : undefined,
+    sessionsInvalidated: true,
     message: generated
-      ? 'Password reset. Copy the generated password now — it will not be shown again.'
-      : 'Password reset.',
+      ? 'Password reset. Copy the generated password now — it will not be shown again. Any existing sessions for this account have been signed out.'
+      : 'Password reset. Any existing sessions for this account have been signed out.',
   });
 });
 

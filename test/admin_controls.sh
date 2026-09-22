@@ -246,15 +246,15 @@ expect_eq "the seeded accounts are listed" 6 "$(jsonval "$USERS" 'd.users.length
 expect_not_contains "no password hash is ever returned" 'password_hash' "$USERS"
 expect_not_contains "no password field is returned" '"password"' "$USERS"
 
-NEWU=$(http_body POST "$BASE/api/admin/users" "$SUPER" '{"name":"Audit Test User","email":"audit.user@lalco.demo","role":"RECRUITER","password":"TestPassword123"}')
+NEWU=$(http_body POST "$BASE/api/admin/users" "$SUPER" '{"name":"Audit Test User","email":"audit.user@lalco.demo","role":"RECRUITER","password":"Kx9#mQr4Tz!vLp2"}')
 NUID=$(jsonval "$NEWU" 'd.user.id')
-expect_eq "create user succeeds" 201 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Second User","email":"second.user@lalco.demo","role":"EVALUATOR","password":"TestPassword123"}')"
-expect_eq "the new user can sign in" 1 "$(jsonval "$(login audit.user@lalco.demo 'TestPassword123')" 'd.token ? 1 : 0')"
+expect_eq "create user succeeds" 201 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Second User","email":"second.user@lalco.demo","role":"EVALUATOR","password":"Kx9#mQr4Tz!vLp2"}')"
+expect_eq "the new user can sign in" 1 "$(jsonval "$(login audit.user@lalco.demo 'Kx9#mQr4Tz!vLp2')" 'd.token ? 1 : 0')"
 expect_eq "their password is bcrypt-hashed" 1 "$(dbq "SELECT CASE WHEN password_hash LIKE '\$2%' THEN 1 ELSE 0 END AS v FROM users WHERE email = 'audit.user@lalco.demo'")"
-expect_eq "a duplicate email is refused" 409 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Dup","email":"audit.user@lalco.demo","role":"RECRUITER","password":"TestPassword123"}')"
+expect_eq "a duplicate email is refused" 409 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Dup","email":"audit.user@lalco.demo","role":"RECRUITER","password":"Kx9#mQr4Tz!vLp2"}')"
 expect_eq "a weak password is refused" 400 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Weak","email":"weak@lalco.demo","role":"RECRUITER","password":"short"}')"
-expect_eq "an invalid email is refused" 400 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Bad","email":"not-an-email","role":"RECRUITER","password":"TestPassword123"}')"
-expect_eq "an invalid role is refused" 400 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Bad","email":"role@lalco.demo","role":"WIZARD","password":"TestPassword123"}')"
+expect_eq "an invalid email is refused" 400 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Bad","email":"not-an-email","role":"RECRUITER","password":"Kx9#mQr4Tz!vLp2"}')"
+expect_eq "an invalid role is refused" 400 "$(http_code POST "$BASE/api/admin/users" "$SUPER" '{"name":"Bad","email":"role@lalco.demo","role":"WIZARD","password":"Kx9#mQr4Tz!vLp2"}')"
 expect_eq "user creation is audited" 1 "$(dbq "SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END AS v FROM audit_logs WHERE action = 'USER_CREATED'")"
 
 expect_eq "edit user succeeds" 200 "$(http_code PATCH "$BASE/api/admin/users/$NUID" "$SUPER" '{"name":"Audit Test User Renamed"}')"
@@ -266,15 +266,15 @@ expect_eq "role change is audited separately" 1 "$(dbq "SELECT CASE WHEN COUNT(*
 expect_eq "setting the same role again is refused" 400 "$(http_code POST "$BASE/api/admin/users/$NUID/role" "$SUPER" '{"role":"MANAGER"}')"
 
 expect_eq "disable user succeeds" 200 "$(http_code POST "$BASE/api/admin/users/$NUID/active" "$SUPER" '{"active":false}')"
-expect_eq "the disabled user cannot sign in" "" "$(jsonval "$(login audit.user@lalco.demo 'TestPassword123')" 'd.token')"
+expect_eq "the disabled user cannot sign in" "" "$(jsonval "$(login audit.user@lalco.demo 'Kx9#mQr4Tz!vLp2')" 'd.token')"
 expect_eq "disabling is audited" 1 "$(dbq "SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END AS v FROM audit_logs WHERE action = 'USER_DISABLED'")"
 expect_eq "enable user succeeds" 200 "$(http_code POST "$BASE/api/admin/users/$NUID/active" "$SUPER" '{"active":true}')"
-expect_eq "the re-enabled user can sign in again" 1 "$(jsonval "$(login audit.user@lalco.demo 'TestPassword123')" 'd.token ? 1 : 0')"
+expect_eq "the re-enabled user can sign in again" 1 "$(jsonval "$(login audit.user@lalco.demo 'Kx9#mQr4Tz!vLp2')" 'd.token ? 1 : 0')"
 
 RESET=$(http_body POST "$BASE/api/admin/users/$NUID/reset-password" "$SUPER" '{"generate":true}')
 GENPW=$(jsonval "$RESET" 'd.generatedPassword')
 check "a generated password is returned once" "$([ ${#GENPW} -ge 10 ] && echo 0 || echo 1)"
-expect_eq "the old password no longer works" "" "$(jsonval "$(login audit.user@lalco.demo 'TestPassword123')" 'd.token')"
+expect_eq "the old password no longer works" "" "$(jsonval "$(login audit.user@lalco.demo 'Kx9#mQr4Tz!vLp2')" 'd.token')"
 expect_eq "the new password works" 1 "$(jsonval "$(login audit.user@lalco.demo "$GENPW")" 'd.token ? 1 : 0')"
 expect_eq "the reset is audited" 1 "$(dbq "SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END AS v FROM audit_logs WHERE action = 'USER_PASSWORD_RESET'")"
 AUDIT_PW=$(dbq "SELECT COALESCE(new_value,'') AS v FROM audit_logs WHERE action = 'USER_PASSWORD_RESET' LIMIT 1")

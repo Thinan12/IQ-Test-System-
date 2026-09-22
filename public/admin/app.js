@@ -284,6 +284,7 @@ function openNewCandidateModal(onDone) {
     <div class="section-title">New candidate</div>
     <div class="grid grid-2">
       <div class="field"><label class="field-label">Full name *</label><input id="nFullName"></div>
+      <div class="field"><label class="field-label">LALCO ID (optional)</label><input id="nCode" placeholder="leave blank to generate automatically" autocomplete="off" spellcheck="false"></div>
       <div class="field"><label class="field-label">Application type *</label><select id="nType"><option value="NORMAL">Normal Staff</option><option value="SCHOLARSHIP">Scholarship Staff</option></select></div>
       <div class="field"><label class="field-label">IQ</label><input type="number" id="nIQ"></div>
       <div class="field"><label class="field-label">Education</label><input id="nEdu" placeholder="High school / Bachelor Degree"></div>
@@ -305,7 +306,8 @@ function openNewCandidateModal(onDone) {
     const fullName = $('#nFullName', bg).value.trim();
     if (!fullName) return toast('Full name is required', true);
     try {
-      await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName, applicationType: $('#nType', bg).value, iq: Number($('#nIQ', bg).value) || null, education: $('#nEdu', bg).value, gpa: Number($('#nGpa', bg).value) || null, position: $('#nPos', bg).value, department: $('#nDept', bg).value, branch: $('#nBranch', bg).value, phone: $('#nPhone', bg).value, dob: $('#nDob', bg).value }) });
+      const customCode = $('#nCode', bg).value.trim();
+      await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName, code: customCode || undefined, applicationType: $('#nType', bg).value, iq: Number($('#nIQ', bg).value) || null, education: $('#nEdu', bg).value, gpa: Number($('#nGpa', bg).value) || null, position: $('#nPos', bg).value, department: $('#nDept', bg).value, branch: $('#nBranch', bg).value, phone: $('#nPhone', bg).value, dob: $('#nDob', bg).value }) });
       toast('Candidate created'); closeModal(); onDone && onDone();
     } catch (e) {}
   };
@@ -905,11 +907,14 @@ function wireCandidateLifecycle(d, id, el) {
     await api('/candidates/' + id + '/restore', { method: 'POST' });
     toast('Candidate restored.'); reload();
   };
-  if ($('#editCandBtn')) $('#editCandBtn').onclick = () => openEditCandidateModal(d.candidate, reload);
+  if ($('#editCandBtn')) $('#editCandBtn').onclick = () => openEditCandidateModal(d.candidate, reload, { hasAssessment: !!d.session });
   if ($('#deleteCandBtn')) $('#deleteCandBtn').onclick = () => openDeleteCandidateModal(d.candidate, () => goto('candidates'));
 }
 
-function openEditCandidateModal(c, onDone) {
+function openEditCandidateModal(c, onDone, options = {}) {
+  // The candidate verifies their identity with this value, so it is locked once
+  // an assessment exists — matching the server-side rule.
+  const lockCode = !!options.hasAssessment;
   const bg = document.createElement('div');
   bg.style.cssText = 'position:fixed;inset:0;background:rgba(10,18,26,.45);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;overflow:auto;';
   const f = (label, id, value, type) => `<div class="field"><label class="field-label">${label}</label><input id="${id}" ${type ? 'type="' + type + '"' : ''} value="${value == null ? '' : esc(value)}"></div>`;
@@ -917,6 +922,9 @@ function openEditCandidateModal(c, onDone) {
     <div class="section-title">Edit candidate — ${esc(c.code)}</div>
     <div class="grid grid-2">
       ${f('Full name *', 'eFullName', c.full_name)}
+      <div class="field"><label class="field-label">LALCO ID</label>
+        <input id="eCode" value="${esc(c.code)}" autocomplete="off" spellcheck="false" ${lockCode ? 'disabled' : ''}>
+        ${lockCode ? '<span class="faint">Locked: an assessment has already been started for this candidate.</span>' : '<span class="faint">Letters, digits, hyphen and underscore.</span>'}</div>
       ${f('Phone', 'ePhone', c.phone)}
       ${f('Email', 'eEmail', c.email)}
       ${f('Education', 'eEdu', c.education)}
@@ -941,7 +949,9 @@ function openEditCandidateModal(c, onDone) {
     const full_name = $('#eFullName', bg).value.trim();
     if (!full_name) return toast('Full name is required', true);
     const num = (v) => (v === '' ? null : Number(v));
+    const newCode = lockCode ? undefined : ($('#eCode', bg).value.trim() || undefined);
     await api('/candidates/' + c.id, { method: 'PATCH', body: JSON.stringify({
+      code: newCode,
       full_name,
       phone: $('#ePhone', bg).value.trim(),
       email: $('#eEmail', bg).value.trim(),

@@ -8,6 +8,10 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('SUPER_ADMIN','HR_ADMIN','RECRUITER','INTERVIEWER','EVALUATOR','MANAGER')),
   active INTEGER NOT NULL DEFAULT 1,
+  -- Bumped whenever a password is reset, a role changes, or an account is
+  -- disabled. Tokens carry the value they were issued with, so raising it
+  -- invalidates every session that account already had.
+  token_version INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

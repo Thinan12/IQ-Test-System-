@@ -6,8 +6,32 @@ if (!JWT_SECRET || JWT_SECRET.length < 16) {
   throw new Error('JWT_SECRET must be set to a strong random value (see .env.example). Refusing to start with a weak/missing secret.');
 }
 
+// Zero-downtime secret rotation: set JWT_SECRET to the new value and
+// JWT_SECRET_PREVIOUS to the old one. New tokens are signed with the new
+// secret; sessions issued under the old one keep working until they expire
+// (8h), so a rotation never interrupts an assessment in progress. Remove
+// JWT_SECRET_PREVIOUS once that window has passed.
+const JWT_SECRET_PREVIOUS = process.env.JWT_SECRET_PREVIOUS || null;
+if (JWT_SECRET_PREVIOUS && JWT_SECRET_PREVIOUS === JWT_SECRET) {
+  throw new Error('JWT_SECRET_PREVIOUS must differ from JWT_SECRET, otherwise rotation has not actually happened.');
+}
+
 function signToken(user) {
-  return jwt.sign({ sub: user.id, name: user.name, role: user.role }, JWT_SECRET, { expiresIn: '8h' });
+  return jwt.sign(
+    { sub: user.id, name: user.name, role: user.role, tv: user.token_version || 0 },
+    JWT_SECRET,
+    { expiresIn: '8h' }
+  );
+}
+
+// Verify against the current secret, then the previous one during a rotation.
+function verifyToken(token) {
+  try {
+    return jwt.verify(token, JWT_SECRET);
+  } catch (e) {
+    if (!JWT_SECRET_PREVIOUS) throw e;
+    return jwt.verify(token, JWT_SECRET_PREVIOUS);
+  }
 }
 
 // Requires a valid admin session (Bearer token). Populates req.user.
@@ -18,8 +42,20 @@ function requireAuth(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : req.cookies && req.cookies.lalco_admin_token;
   if (!token) return res.status(401).json({ error: 'Not authenticated.' });
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.user = { id: payload.sub, name: payload.name, role: payload.role };
+    const payload = verifyToken(token);
+    // The account is re-checked on every request: a disabled account, a changed
+    // role, or a password reset takes effect immediately rather than lingering
+    // until the token expires.
+    const db = require('../db');
+    const user = db.prepare('SELECT id, name, role, active, token_version FROM users WHERE id = ?').get(payload.sub);
+    if (!user || !user.active) {
+      return res.status(401).json({ error: 'This account is no longer active. Please sign in again.' });
+    }
+    if ((payload.tv || 0) !== (user.token_version || 0)) {
+      return res.status(401).json({ error: 'Your session has been ended. Please sign in again.' });
+    }
+    // Role comes from the database, not the token, so a demotion is immediate.
+    req.user = { id: user.id, name: user.name, role: user.role };
     next();
   } catch (e) {
     return res.status(401).json({ error: 'Invalid or expired session.' });
@@ -60,4 +96,4 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many login attempts. Please try again later.' },
 });
 
-module.exports = { signToken, requireAuth, requireRole, examLimiter, loginLimiter, JWT_SECRET };
+module.exports = { signToken, verifyToken, requireAuth, requireRole, examLimiter, loginLimiter, JWT_SECRET };

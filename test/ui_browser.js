@@ -220,7 +220,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.fill('#uName', 'Browser Made User');
     await page.fill('#uEmail', 'browser.user@lalco.demo');
     await page.selectOption('#uRole', 'RECRUITER');
-    await page.fill('#uPass', 'BrowserPassword123');
+    await page.fill('#uPass', 'Bw7#nHt5Jq!xZd3');
     await page.click('#uSave');
     await page.waitForTimeout(1600);
     check(one('SELECT COUNT(*) FROM users') === usersBefore + 1, 'the user row was created');
@@ -230,7 +230,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(one("SELECT COUNT(*) FROM audit_logs WHERE action='USER_CREATED'") > 0, 'user creation is audited');
     const usersText = await page.locator('#content').innerText();
     check(usersText.includes('Browser Made User'), 'and the table refreshed');
-    check(!usersText.includes('BrowserPassword123'), 'the password is never displayed in the UI');
+    check(!usersText.includes('Bw7#nHt5Jq!xZd3'), 'the password is never displayed in the UI');
 
     // Disable through the real button.
     page.once('dialog', (d) => d.accept());

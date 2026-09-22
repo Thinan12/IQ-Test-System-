@@ -11,6 +11,7 @@ const bcrypt = require('bcryptjs');
 const { linkLiveStatus, sessionLiveStatus } = require('../../lib/examControl');
 const { deleteCandidateData } = require('../../lib/dataManagement');
 const { nextCandidateCode } = require('../../lib/dataManagement');
+const { validateCode } = require('../../lib/candidateCode');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -89,9 +90,17 @@ router.post('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (req, res)
   const b = req.body || {};
   if (!b.fullName || !b.applicationType) return res.status(400).json({ error: 'fullName and applicationType are required.' });
   const id = generateId('cand');
-  // Derived from the highest code already issued, not from a row count, so a
-  // code is never reused after demo or candidate data has been deleted.
-  const code = nextCandidateCode('LALCO');
+  // An administrator may supply their own LALCO ID; otherwise one is derived
+  // from the highest code already issued (never from a row count, so a code is
+  // not reused after data has been deleted).
+  let code;
+  if (b.code !== undefined && String(b.code).trim() !== '') {
+    const v = validateCode(b.code);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    code = v.code;
+  } else {
+    code = nextCandidateCode('LALCO');
+  }
   db.prepare(
     `INSERT INTO candidates (id, code, full_name, gender, dob, nationality, phone, email, address, province,
       current_location, education, university, major, gpa, previous_employer, previous_position, years_experience,
@@ -113,7 +122,7 @@ router.post('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (req, res)
     branch: lookupOrCreate('branches', b.branch), applicationDate: b.applicationDate || new Date().toISOString().slice(0, 10),
     recruitmentBatch: b.recruitmentBatch || null, recruiterId: req.user.id, iq: b.iq != null ? Number(b.iq) : null,
   });
-  auditFromReq(req, 'Candidate created', code);
+  auditFromReq(req, 'Candidate created', code, null, { customCode: b.code !== undefined && String(b.code).trim() !== '' });
   res.status(201).json({ id, code });
 });
 
@@ -175,10 +184,33 @@ router.patch('/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (req, 
     'years_experience', 'expected_salary', 'iq', 'status'];
   const updates = {};
   Object.keys(req.body || {}).forEach((k) => { if (allowed.includes(k)) updates[k] = req.body[k]; });
+
+  // The LALCO ID may be corrected, but not once an assessment exists: the
+  // candidate verifies their identity with this value, and reports and exports
+  // already carry it.
+  let codeChange = null;
+  if (req.body && req.body.code !== undefined && String(req.body.code).trim() !== '') {
+    const v = validateCode(req.body.code, { excludeId: c.id });
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    if (v.code !== c.code) {
+      const session = db.prepare('SELECT id, status FROM assessment_sessions WHERE candidate_id = ? LIMIT 1').get(c.id);
+      if (session) {
+        return res.status(409).json({
+          error: 'The Candidate ID cannot be changed once an assessment has been started for this candidate.',
+        });
+      }
+      codeChange = v.code;
+      updates.code = v.code;
+    }
+  }
+
   if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update.' });
   const setClause = Object.keys(updates).map((k) => `${k} = @${k}`).join(', ');
   db.prepare(`UPDATE candidates SET ${setClause}, updated_at = datetime('now') WHERE id = @id`).run({ ...updates, id: c.id });
-  auditFromReq(req, 'Candidate updated', c.code, c, updates);
+  if (codeChange) {
+    auditFromReq(req, 'CANDIDATE_CODE_CHANGED', c.code, { code: c.code }, { code: codeChange, by: req.user.name });
+  }
+  auditFromReq(req, 'Candidate updated', codeChange || c.code, c, updates);
   res.json({ ok: true });
 });
 
