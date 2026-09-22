@@ -106,7 +106,7 @@ function renderInstructions(info) {
 
 function startTimer() {
   clearInterval(STATE.timerInterval);
-  STATE.timerInterval = setInterval(() => {
+  function tick() {
     const el = $('#timer'); if (!el) return;
     const remaining = Math.max(0, Math.floor((parseDbDate(STATE.expiresAt) - Date.now()) / 1000));
     el.textContent = String(Math.floor(remaining / 60)).padStart(2, '0') + ':' + String(remaining % 60).padStart(2, '0');
@@ -118,7 +118,12 @@ function startTimer() {
       // sees the outcome straight away instead of waiting for the sweep.
       autoSubmit();
     }
-  }, 1000);
+  }
+  // Paint once immediately: startTimer() runs on every question screen, so
+  // waiting for the first interval tick left the candidate looking at "--:--"
+  // for a second each time they moved between questions.
+  tick();
+  STATE.timerInterval = setInterval(tick, 1000);
 }
 
 async function renderQuestionFlow(info) {
