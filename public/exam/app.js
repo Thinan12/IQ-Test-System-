@@ -73,6 +73,9 @@ function renderInstructions(info) {
   `, { nav: `<div class="pnav"><button class="btn btn-primary" id="startBtn" disabled>Start Assessment</button></div>` });
   $('#ack').onchange = (e) => { $('#startBtn').disabled = !e.target.checked; };
   $('#startBtn').onclick = async () => {
+    // Already guarded: disabling here means a second tap is a no-op, so a
+    // double tap cannot create two sessions.
+    if ($('#startBtn').disabled) return;
     $('#startBtn').disabled = true; $('#startBtn').textContent = 'Starting…';
     try {
       const body = {};
@@ -177,12 +180,28 @@ async function showQuestion() {
     $$('.pbody input').forEach((inp) => { inp.addEventListener('input', debouncedSave); inp.addEventListener('change', debouncedSave); });
     $$('.qopt input').forEach((r) => r.addEventListener('change', () => { $$('.qopt').forEach((o) => o.classList.remove('checked')); r.closest('.qopt').classList.add('checked'); }));
   }
-  if ($('#prevBtn')) $('#prevBtn').onclick = async () => { await saveAnswer(); STATE.idx--; persistLocalProgress(); showQuestion(); };
-  $('#nextBtn').onclick = async () => {
-    await saveAnswer();
-    if (STATE.idx === total - 1) { STATE.step = 'review'; persistLocalProgress(); showReview(); }
-    else { STATE.idx++; persistLocalProgress(); showQuestion(); }
-  };
+  // Navigation saves before moving. Guard against a double tap firing two
+  // saves or skipping a question, and show the candidate that it is working.
+  let navigating = false;
+  async function navigate(delta) {
+    if (navigating) return;
+    navigating = true;
+    const btn = delta > 0 ? $('#nextBtn') : $('#prevBtn');
+    const label = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      await saveAnswer();
+      if (delta > 0 && STATE.idx === total - 1) { STATE.step = 'review'; persistLocalProgress(); showReview(); return; }
+      STATE.idx += delta;
+      persistLocalProgress();
+      showQuestion();
+    } finally {
+      navigating = false;
+      if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = label; }
+    }
+  }
+  if ($('#prevBtn')) $('#prevBtn').onclick = () => navigate(-1);
+  $('#nextBtn').onclick = () => navigate(1);
 }
 
 async function showReview() {

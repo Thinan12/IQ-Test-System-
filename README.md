@@ -163,6 +163,30 @@ status, reason, started, scheduled end, actual end, duration, answered and
 unanswered. An `ASSESSMENT_AUTO_SUBMITTED` audit record carries the candidate,
 assessment, timestamp, reason and both counts.
 
+## UI guarantees
+
+Every rendered control in both SPAs is wired to a real handler — there are no
+placeholder buttons, TODO stubs or no-op handlers. `test/ui_wiring.js` enforces
+this as a regression test: it fails if a button is ever added without a handler,
+if a dead `href="#"` appears, or if an action button loses its loading state.
+
+- **No duplicate operations.** Every mutating button carries `data-busy="Label"`
+  and is decorated so it is disabled for the *whole* async operation, not just
+  until the click handler returns. Two rapid clicks on Generate Link, Save,
+  Backup or Submit produce exactly one operation. The server is independently
+  idempotent (see `finalizeSession`), so this is defence in depth, not the only
+  guard.
+- **Loading states.** The same mechanism shows `Saving…`, `Generating…`,
+  `Backing up…`, `Submitting…` while work is in flight.
+- **Modals always close.** Escape, clicking the backdrop and Cancel all dismiss,
+  so a failed action can never leave the page under a stuck overlay.
+- **Errors are specific.** `httpMessage()` maps 400/401/403/404/409/422/429/500/503
+  to something a user can act on; network failure says so plainly; a 401 clears
+  the session and returns to login. A failed request never renders as success,
+  and an empty download is reported rather than saved.
+- **Views fail visibly.** A view whose data fails to load shows an error with a
+  Retry button instead of hanging on `Loading…`.
+
 ## Deployment
 
 See **[RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md)** for the exact Railway
@@ -310,6 +334,8 @@ test/
   lib.sh                   shared harness - throwaway DB per suite, never touches data/
   security_check.sh        section 16 - security assertions
   auto_submit.sh           sections 1-8 - auto-submit on time expiry
+  ui_wiring.js             static: no dead buttons, guards + error handling present
+  ui_actions.sh            behavioural: the operation behind every control
   deployment.sh            sections 9-15 - volume path, seeding, health, CORS, Node
   multi_candidate.sh       section 19 - three candidates, three sessions, no bleed
   mobile_markup.sh         section 20 - static mobile checks (device testing is manual)
@@ -349,6 +375,7 @@ the version `better-sqlite3` was compiled against, pass another one:
 | --- | --- |
 | `e2e_test.sh` | The core workflow end to end: create candidate, generate link, open it as an unauthenticated stranger, verify identity, answer all 6 calculation questions + essay, simulate a large paste and tab switches, submit, confirm post-submission edits are rejected, confirm a re-issued link revokes (but preserves) the old one, HR sees the full per-question breakdown, essay/interview scoring rolls into a final score and pass/fail, reports (CSV/PDF/Excel) and the audit log are populated, a bogus token is rejected. |
 | `test/security_check.sh` | All 18 checks from the security section, 101 assertions: admin API auth, cross-candidate isolation, score/answer-key immutability, double submission, expired/revoked/superseded/invalid tokens, role permissions, Super-Admin-only deletion, no Google credentials in anything the browser receives, the database file not being served, bcrypt hashing, refusal to start without a strong `JWT_SECRET`, rate limiting, and HTTPS enforcement + HSTS under `NODE_ENV=production`. |
+| `test/ui_actions.sh` | Every user-actionable control, verified by its underlying operation rather than by the click firing: login/logout incl. disabled accounts, all sidebar destinations, candidate create/search/open, link generate/revoke/regenerate, eligibility rules changing a real eligibility outcome, question bank, marking (30+30+40=100, threshold 70, role rules, re-mark does not duplicate), PDF/CSV/Excel with real bytes and real content, Google Sheets reporting an honest NOT CONFIGURED, all Data Management buttons, settings persisting across reload, audit coverage for eleven action types, HTTP error states, and the full delete-all authorisation chain. Includes the duplicate-click checks: five simultaneous Generate Link calls leave one active link, five simultaneous Submits produce one score row. |
 | `test/auto_submit.sh` | Genuine auto-submission, driven by a real 1-minute assessment. An abandoned session is finalized by the server with no candidate action; saved answers are kept and unanswered ones stay unanswered; the result exists and the assessment is locked; `AUTO_SUBMITTED` / `TIME_EXPIRED` reach HR and the audit log; a late request finalizes on the spot and its answer is rejected; a manual submission just before expiry is never duplicated, re-scored or relabelled; six simultaneous submissions yield one final state; and a client-supplied deadline is ignored. |
 | `test/deployment.sh` | Deployment readiness: SQLite opens from a custom `DATABASE_PATH` on a directory that does not exist yet, WAL/SHM sidecars and backups land beside it and never under `public/` or over HTTP, data survives a restart, the health check reports `ok`/`connected` and leaks nothing, production CORS allows only listed origins and never a wildcard, Node 20 pinning and `0.0.0.0` binding, and `npm run seed` creates reference data with **zero** candidate records while `seed:demo` is the only path that creates them. |
 | `test/multi_candidate.sh` | Three candidates with three links, started interleaved and submitted independently: each sees only their own data, each identity check is bound to its own candidate, scores and essay text never cross over, each submission locks independently, and marking one candidate leaves the others untouched. |
