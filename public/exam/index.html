@@ -13,6 +13,12 @@ body{padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inse
 .pbrand{display:flex; align-items:center; gap:8px; font-family:Georgia,serif; font-weight:600; font-size:14px;}
 .pbrand .mark{width:26px; height:26px; border-radius:6px; background:linear-gradient(155deg,var(--gold),#8a6a22);}
 .timer{font-family:Georgia,serif; font-weight:700; font-size:18px; font-variant-numeric:tabular-nums;}
+/* English | ລາວ switcher. Both options stay visible so a candidate can see at
+   a glance which language they are in and change it in one tap. */
+.langswitch{display:inline-flex; border:1px solid var(--line); border-radius:7px; overflow:hidden;}
+.langswitch button{background:var(--paper); border:none; padding:7px 11px; font-size:12.5px; font-weight:600; color:var(--text-mute); cursor:pointer; min-height:36px;}
+.langswitch button.active{background:var(--gold); color:#20160a;}
+.langswitch button:disabled{opacity:.55; cursor:default;}
 .timer.low{color:var(--danger);}
 .pbody{flex:1; max-width:640px; margin:0 auto; width:100%; padding:20px 16px 110px;}
 .qopt{display:flex; align-items:flex-start; gap:11px; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:9px; cursor:pointer; background:var(--paper-raised);}

@@ -537,28 +537,220 @@ async function viewLinks(_, el) {
 }
 
 // ---------------- Question bank ----------------
+const TRANSLATION_TONE = { MISSING: 'danger', DRAFT: 'warning', APPROVED: 'success' };
+
+function translationBadge(status) {
+  const s = status || 'MISSING';
+  return `<span class="badge badge-${TRANSLATION_TONE[s] || 'neutral'}">${s}</span>`;
+}
+
+function canEditQuestions() {
+  return AUTH && ['SUPER_ADMIN', 'HR_ADMIN'].includes(AUTH.user.role);
+}
+
 async function viewQuestions(_, el) {
-  el.innerHTML = `<div class="tabs"><button class="active" data-qt="calc">Calculation</button><button data-qt="essay">Essay</button><button data-qt="interview">Interview</button></div><div id="qBody"></div>`;
-  async function show(t) {
-    if (t === 'calc' || t === 'essay') {
-      const { questions } = await api('/questions');
-      const list = questions.filter((q) => q.type === t.toUpperCase());
-      $('#qBody').innerHTML = list.map((q) => `<div class="card" style="margin-bottom:12px;"><div class="section-title">${esc(q.category || q.type)} <span class="faint">${q.max_marks} marks</span></div>
-        <p style="font-size:13px;">${esc(q.text)}</p>
-        ${q.type === 'CALC' ? `<table style="font-size:12.6px;"><thead><tr><th>Step</th><th>Marks</th></tr></thead><tbody>${q.config.parts.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.marks}</td></tr>`).join('')}</tbody></table>` : `<table style="font-size:12.6px;"><thead><tr><th>Criterion</th><th>Max</th></tr></thead><tbody>${q.config.rubric.map((r) => `<tr><td>${esc(r.label)}</td><td>${r.max}</td></tr>`).join('')}</tbody></table>`}
-        <p class="faint" style="margin-top:6px;">Answer key and marking rules are only ever shown here, inside the authenticated admin app — never in the candidate exam.</p>
-      </div>`).join('') || `<div class="empty"><h3>No ${t === 'calc' ? 'calculation' : 'essay'} questions</h3><p>The question bank has no active ${t === 'calc' ? 'calculation' : 'essay'} questions. Run the seed, or add them via the API.</p></div>`;
-    } else {
-      const { questions } = await api('/questions/interview/questions');
-      const { criteria } = await api('/questions/interview/criteria');
-      $('#qBody').innerHTML = `<div class="card"><div class="section-title">Interview questions <button class="btn btn-sm" id="addIv" data-busy="Adding…">+ Add</button></div>
-        ${questions.map((q) => `<div style="padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13px;">${esc(q.text)} ${q.disqualifying ? '<span class="badge badge-warning">Can disqualify</span>' : ''}</div>`).join('')}</div>
-        <div class="card" style="margin-top:14px;"><div class="section-title">Scoring rubric (40 marks)</div><table><thead><tr><th>Criterion</th><th>Max</th></tr></thead><tbody>${criteria.map((c) => `<tr><td>${esc(c.label)}</td><td>${c.max_marks}</td></tr>`).join('')}</tbody></table></div>`;
-      if ($('#addIv')) $('#addIv').onclick = async () => { const text = prompt('New interview question:'); if (!text) return; await api('/questions/interview/questions', { method: 'POST', body: JSON.stringify({ text }) }); show('interview'); };
-    }
+  let showArchived = false;
+
+  async function show(tab) {
+    el.innerHTML = `<div class="tabs">
+        <button class="${tab === 'calc' ? 'active' : ''}" data-qt="calc">Calculation</button>
+        <button class="${tab === 'essay' ? 'active' : ''}" data-qt="essay">Essay</button>
+        <button class="${tab === 'interview' ? 'active' : ''}" data-qt="interview">Interview</button>
+      </div><div id="qBody">Loading…</div>`;
+    $$('.tabs button', el).forEach((b) => (b.onclick = () => show(b.dataset.qt)));
+
+    if (tab === 'interview') return showInterview();
+
+    const { questions } = await api('/questions' + (showArchived ? '?archived=1' : ''));
+    const list = questions.filter((q) => q.type === tab.toUpperCase());
+
+    $('#qBody').innerHTML = `
+      <div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="field" style="margin:0;"><label class="field-label">Show</label>
+          <select id="qArchived">
+            <option value="">Active questions</option>
+            <option value="1" ${showArchived ? 'selected' : ''}>Archived</option>
+          </select></div>
+        <span style="flex:1"></span>
+        ${canEditQuestions() ? `<button class="btn btn-primary btn-sm" id="newQBtn">+ New ${tab === 'calc' ? 'calculation' : 'essay'} question</button>` : ''}
+      </div>
+      ${list.map((q) => questionCardHTML(q)).join('') || `<div class="empty"><h3>No ${showArchived ? 'archived ' : ''}${tab === 'calc' ? 'calculation' : 'essay'} questions</h3><p>${showArchived ? 'Nothing has been archived.' : 'Add one with the button above, or run the seed.'}</p></div>`}`;
+
+    $('#qArchived').onchange = (e) => { showArchived = e.target.value === '1'; show(tab); };
+    if ($('#newQBtn')) $('#newQBtn').onclick = () => openQuestionModal(null, tab.toUpperCase(), () => show(tab));
+    wireQuestionActions(questions, () => show(tab));
   }
-  $$('.tabs button', el).forEach((b) => (b.onclick = () => { $$('.tabs button', el).forEach((x) => x.classList.remove('active')); b.classList.add('active'); show(b.dataset.qt); }));
+
+  async function showInterview() {
+    const { questions } = await api('/questions/interview/questions');
+    const { criteria } = await api('/questions/interview/criteria');
+    $('#qBody').innerHTML = `<div class="card"><div class="section-title">Interview questions ${canEditQuestions() ? '<button class="btn btn-sm" id="addIv" data-busy="Adding…">+ Add</button>' : ''}</div>
+      ${questions.map((q) => `<div style="padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13px;">${esc(q.text)} ${q.disqualifying ? '<span class="badge badge-warning">Can disqualify</span>' : ''}</div>`).join('')}</div>
+      <div class="card" style="margin-top:14px;"><div class="section-title">Scoring rubric (40 marks)</div><table><thead><tr><th>Criterion</th><th>Max</th></tr></thead><tbody>${criteria.map((c) => `<tr><td>${esc(c.label)}</td><td>${c.max_marks}</td></tr>`).join('')}</tbody></table></div>`;
+    if ($('#addIv')) $('#addIv').onclick = async () => {
+      const text = prompt('New interview question:');
+      if (!text) return;
+      await api('/questions/interview/questions', { method: 'POST', body: JSON.stringify({ text }) });
+      showInterview();
+    };
+  }
+
   show('calc');
+}
+
+// A question card shows English and Lao side by side, so a reviewer can check a
+// translation against its source without opening anything.
+function questionCardHTML(q) {
+  const parts = q.config && Array.isArray(q.config.parts) ? q.config.parts : [];
+  const rubric = q.config && Array.isArray(q.config.rubric) ? q.config.rubric : [];
+  const lo = q.configLo && q.configLo.parts ? q.configLo.parts : {};
+  return `<div class="card" style="margin-bottom:12px;${q.archived ? 'opacity:.72;' : ''}">
+    <div class="section-title">
+      <span>${esc(q.category || q.type)} <span class="faint">${q.max_marks} marks</span>
+        ${q.archived ? '<span class="badge badge-neutral">ARCHIVED</span>' : ''}
+        ${q.active ? '' : '<span class="badge badge-warning">INACTIVE</span>'}</span>
+      <span>Lao: ${translationBadge(q.translationStatus)}</span>
+    </div>
+    <div class="grid grid-2" style="gap:10px;">
+      <div><div class="field-label">English question</div><p style="font-size:13px;">${esc(q.text)}</p></div>
+      <div><div class="field-label">Lao question</div>${q.text_lo
+        ? `<p style="font-size:13px;">${esc(q.text_lo)}</p>`
+        : '<p class="faint" style="font-size:13px;">Not translated yet.</p>'}</div>
+    </div>
+    ${parts.length ? `<table style="font-size:12.6px;margin-top:8px;"><thead><tr><th>Step (English)</th><th>Step (Lao)</th><th>Marks</th></tr></thead><tbody>${parts.map((p) => {
+      const l = lo[p.key] || {};
+      return `<tr><td>${esc(p.label)}${p.type === 'choice' ? `<br><span class="faint">${(p.options || []).map(esc).join(' · ')}</span>` : ''}</td>
+        <td>${l.label ? esc(l.label) : '<span class="faint">—</span>'}${p.type === 'choice' && l.options ? `<br><span class="faint">${(p.options || []).map((o) => esc(l.options[o] || '—')).join(' · ')}</span>` : ''}</td>
+        <td>${p.marks}</td></tr>`;
+    }).join('')}</tbody></table>` : ''}
+    ${rubric.length ? `<table style="font-size:12.6px;margin-top:8px;"><thead><tr><th>Criterion</th><th>Max</th></tr></thead><tbody>${rubric.map((r) => `<tr><td>${esc(r.label)}</td><td>${r.max}</td></tr>`).join('')}</tbody></table>` : ''}
+    <p class="faint" style="margin-top:6px;">Answer key and marking rules are only ever shown here, inside the authenticated admin app — never in the candidate exam.</p>
+    ${canEditQuestions() ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+      <button class="btn btn-sm" data-qact="edit" data-qid="${q.id}">Edit</button>
+      ${q.archived
+        ? `<button class="btn btn-sm" data-qact="restore" data-qid="${q.id}" data-busy="Restoring…">Restore</button>`
+        : `<button class="btn btn-sm" data-qact="archive" data-qid="${q.id}" data-busy="Archiving…">Archive</button>`}
+    </div>` : ''}
+  </div>`;
+}
+
+function wireQuestionActions(questions, reload) {
+  $$('[data-qact]').forEach((btn) => {
+    btn.onclick = async () => {
+      const q = questions.find((x) => x.id === btn.dataset.qid);
+      const act = btn.dataset.qact;
+      if (act === 'edit') return openQuestionModal(q, q.type, reload);
+      if (act === 'archive') {
+        if (!confirm('Archive this question? It is withdrawn from new assessments. Completed assessments keep it, and you can restore it at any time.')) return;
+        const r = await api('/questions/' + q.id + '/archive', { method: 'POST' });
+        toast(`Question archived.${r.answersReferencing ? ` ${r.answersReferencing} existing answer(s) still reference it.` : ''}`);
+        return reload();
+      }
+      if (act === 'restore') {
+        await api('/questions/' + q.id + '/restore', { method: 'POST' });
+        toast('Question restored.');
+        return reload();
+      }
+    };
+  });
+}
+
+// Create / edit. English is required; Lao is optional and can only be marked
+// APPROVED deliberately — nothing is auto-translated anywhere in this app.
+function openQuestionModal(question, type, onDone) {
+  const editing = !!question;
+  const cfg = editing ? question.config : (type === 'CALC'
+    ? { parts: [{ key: 'answer', label: '', marks: 5, expected: 0, tol: 0.01 }] }
+    : { rubric: [{ key: 'content', label: '', max: 10 }] });
+  const cfgLo = editing && question.configLo ? question.configLo : { parts: {} };
+
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(10,18,26,.5);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:4vh 16px;overflow:auto;';
+  bg.innerHTML = `<div class="card" style="max-width:820px;width:100%;">
+    <div class="section-title">${editing ? 'Edit question' : 'New ' + (type === 'CALC' ? 'calculation' : 'essay') + ' question'}</div>
+
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">English question *</label>
+        <textarea id="qText" style="min-height:96px;">${editing ? esc(question.text) : ''}</textarea></div>
+      <div class="field"><label class="field-label">Lao question (ຄຳຖາມພາສາລາວ)</label>
+        <textarea id="qTextLo" style="min-height:96px;" placeholder="Leave blank until an approved translation exists">${editing && question.text_lo ? esc(question.text_lo) : ''}</textarea></div>
+    </div>
+
+    <div class="grid grid-3" style="gap:12px;">
+      <div class="field"><label class="field-label">Category</label><input id="qCategory" value="${editing ? esc(question.category || '') : ''}"></div>
+      <div class="field"><label class="field-label">Translation status</label>
+        <select id="qStatus">
+          ${['MISSING', 'DRAFT', 'APPROVED'].map((st) => `<option value="${st}" ${editing && question.translationStatus === st ? 'selected' : ''}>${st}</option>`).join('')}
+        </select>
+        <span class="faint">Only APPROVED is shown to candidates.</span></div>
+      <div class="field"><label class="field-label">Active</label>
+        <select id="qActive">
+          <option value="1" ${!editing || question.active ? 'selected' : ''}>Active</option>
+          <option value="0" ${editing && !question.active ? 'selected' : ''}>Inactive</option>
+        </select></div>
+    </div>
+
+    <div class="field"><label class="field-label">Explanation (internal — never shown to candidates)</label>
+      <textarea id="qExplanation" style="min-height:60px;">${editing && question.explanation ? esc(question.explanation) : ''}</textarea></div>
+
+    <div class="field"><label class="field-label">${type === 'CALC' ? 'Marking configuration — parts, marks, expected answer and tolerance' : 'Rubric — criteria and maximum marks'} *</label>
+      <textarea id="qConfig" class="mono" style="min-height:150px;font-size:12px;">${esc(JSON.stringify(cfg, null, 2))}</textarea>
+      <span class="faint">${type === 'CALC'
+        ? 'Each part: {"key","label","marks","expected","tol"} — or {"type":"choice","options":[...],"expected":"..."} for a choice. Total marks are computed from the parts.'
+        : 'Each criterion: {"key","label","max"}. Total marks are computed from the rubric.'}</span></div>
+
+    ${type === 'CALC' ? `<div class="field"><label class="field-label">Lao text for the parts (labels and option wording only)</label>
+      <textarea id="qConfigLo" class="mono" style="min-height:110px;font-size:12px;">${esc(JSON.stringify(cfgLo, null, 2))}</textarea>
+      <span class="faint">{"parts":{"&lt;key&gt;":{"label":"…","options":{"Accept":"…","Reject":"…"}}}} — option <b>values</b> are never translated, only how they read, so marking is unaffected.</span></div>` : ''}
+
+    <p class="faint">English is the source language. A Lao translation belongs to the same question ID, so marks, answer key and history are shared.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" id="qCancel">Cancel</button>
+      <button class="btn btn-primary" id="qSave" data-busy="Saving…">${editing ? 'Save changes' : 'Create question'}</button>
+    </div>
+  </div>`;
+
+  document.body.appendChild(bg);
+  const close = makeDismissable(bg);
+  $('#qCancel', bg).onclick = close;
+  $('#qText', bg).focus();
+
+  $('#qSave', bg).onclick = async () => {
+    const text = $('#qText', bg).value.trim();
+    if (!text) return toast('The English question text is required.', true);
+
+    let config, configLo = null;
+    try { config = JSON.parse($('#qConfig', bg).value); }
+    catch (e) { return toast('The marking configuration is not valid JSON.', true); }
+    if ($('#qConfigLo', bg)) {
+      const raw = $('#qConfigLo', bg).value.trim();
+      if (raw) {
+        try { configLo = JSON.parse(raw); }
+        catch (e) { return toast('The Lao part text is not valid JSON.', true); }
+      }
+    }
+
+    const payload = {
+      type: editing ? question.type : type,
+      text,
+      textLo: $('#qTextLo', bg).value.trim() || null,
+      translationStatus: $('#qStatus', bg).value,
+      category: $('#qCategory', bg).value.trim() || null,
+      explanation: $('#qExplanation', bg).value.trim() || null,
+      active: $('#qActive', bg).value === '1',
+      config,
+      configLo,
+    };
+
+    // The server validates all of this again and is the authority; these
+    // client checks only save a round trip.
+    const r = editing
+      ? await api('/questions/' + question.id, { method: 'PATCH', body: JSON.stringify(payload) })
+      : await api('/questions', { method: 'POST', body: JSON.stringify(payload) });
+    toast(`Question ${editing ? 'updated' : 'created'}. Total ${r.maxMarks} marks · Lao ${r.translationStatus}.`);
+    close();
+    onDone && onDone();
+  };
 }
 
 // ---------------- Interviews queue ----------------

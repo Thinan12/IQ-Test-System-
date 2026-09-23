@@ -103,8 +103,27 @@ CREATE TABLE IF NOT EXISTS questions (
   category TEXT,
   difficulty TEXT,
   max_marks INTEGER NOT NULL,
+  -- `text` is the English source and stays the single source of truth. It is
+  -- never renamed, so every existing query, export and report keeps working.
   text TEXT NOT NULL,
   config_json TEXT NOT NULL, -- {parts:[{key,label,marks,expected,tol,type,options}]} or {rubric:[...], themeHints:[...]}
+  -- Lao translation of the SAME question. One question ID, two languages: the
+  -- record is never duplicated, so scoring, answer keys and history are shared.
+  text_lo TEXT,
+  -- Lao strings for the candidate-facing parts of config_json, keyed the same
+  -- way: {parts:{<key>:{label, options:{<englishValue>: '<lao label>'}}}}.
+  -- Option VALUES are never translated — only their labels — because a choice
+  -- answer is stored as its value and graded by exact match against `expected`.
+  config_lo_json TEXT,
+  -- MISSING -> nothing entered; DRAFT -> entered, not yet approved;
+  -- APPROVED -> a human has signed it off and it may be shown to candidates.
+  translation_status TEXT NOT NULL DEFAULT 'MISSING'
+    CHECK(translation_status IN ('MISSING','DRAFT','APPROVED')),
+  translation_updated_by TEXT,
+  translation_updated_at TEXT,
+  archived INTEGER NOT NULL DEFAULT 0,
+  archived_at TEXT,
+  archived_by TEXT,
   explanation TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_by TEXT,
@@ -188,6 +207,9 @@ CREATE TABLE IF NOT EXISTS assessment_sessions (
   answered_count INTEGER,
   unanswered_count INTEGER,
   verified INTEGER NOT NULL DEFAULT 0,
+  -- The candidate's chosen display language for this assessment. Presentation
+  -- only: it never affects the deadline, the answers or the marking.
+  language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('en','lo')),
   google_sync_status TEXT NOT NULL DEFAULT 'NOT_REQUESTED' CHECK(google_sync_status IN ('NOT_REQUESTED','PENDING','SYNCED'))
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_candidate ON assessment_sessions(candidate_id);

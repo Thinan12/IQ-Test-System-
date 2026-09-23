@@ -24,16 +24,98 @@ async function exam(path, opts = {}) {
   return data;
 }
 
-let STATE = { step: 'loading', questions: [], idx: 0, expiresAt: null, timerInterval: null, pausePoll: null, integrity: { pasteEvents: 0, focusChanges: 0, largestPaste: 0 } };
+let STATE = { step: 'loading', questions: [], idx: 0, expiresAt: null, timerInterval: null, pausePoll: null, language: 'en', switchingLanguage: false, integrity: { pasteEvents: 0, focusChanges: 0, largestPaste: 0 } };
+
+// Candidate-facing interface strings. English is the source language; the Lao
+// column is filled in by the LALCO team. A blank Lao entry falls back to
+// English rather than showing an empty control.
+const UI_STRINGS = {
+  en: {
+    langLabel: 'English', otherLangLabel: 'ລາວ',
+    questionOf: (i, n) => `Question ${i} of ${n}`,
+    writtenResponse: 'Written response',
+    autosave: 'Answer autosaves as you type.',
+    previous: 'Previous', next: 'Next', review: 'Review Answers',
+    submit: 'Submit Assessment', back: 'Back', edit: 'Edit',
+    switching: 'Switching…',
+    laoUnavailable: 'Lao translation not available for this question. The English version is shown below.',
+  },
+  lo: {
+    // Filled in by the LALCO team. Anything left blank falls back to English —
+    // nothing here is machine-translated.
+    langLabel: 'ລາວ', otherLangLabel: 'English',
+    questionOf: null, writtenResponse: null, autosave: null,
+    previous: null, next: null, review: null,
+    submit: null, back: null, edit: null, switching: null,
+    laoUnavailable: null,
+  },
+};
+
+// Returns the string for the active language, falling back to English.
+function t(key, ...args) {
+  const lang = STATE.language || 'en';
+  const candidate = (UI_STRINGS[lang] || {})[key];
+  const value = (candidate === null || candidate === undefined || candidate === '')
+    ? UI_STRINGS.en[key] : candidate;
+  return typeof value === 'function' ? value(...args) : value;
+}
 
 function shell(inner, opts = {}) {
   document.title = 'LALCO Assessment';
   $('#app').innerHTML = `<div class="portal">
-    <div class="ptop"><div class="row1"><div class="pbrand"><div class="mark"></div>LALCO Assessment</div>${opts.timer ? `<div class="timer" id="timer">--:--</div>` : ''}</div>
+    <div class="ptop"><div class="row1"><div class="pbrand"><div class="mark"></div>LALCO Assessment</div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        ${opts.language === false ? '' : languageToggleHTML()}
+        ${opts.timer ? `<div class="timer" id="timer">--:--</div>` : ''}
+      </div></div>
     ${opts.progress != null ? `<div class="progress"><div style="width:${opts.progress}%"></div></div><div class="faint" style="margin-top:5px;font-size:11.5px;">${opts.stepLabel || ''}</div>` : ''}</div>
     <div class="pbody">${inner}</div>
     ${opts.nav || ''}
   </div>`;
+}
+
+// English | ລາວ. Presentation only — it never submits, never reloads the
+// session, and never touches the deadline.
+function languageToggleHTML() {
+  const lang = STATE.language || 'en';
+  const btn = (code, label) => `<button type="button" class="langbtn ${lang === code ? 'active' : ''}" data-lang="${code}"${lang === code ? ' aria-current="true"' : ''}>${label}</button>`;
+  return `<div class="langswitch" id="langSwitch" role="group" aria-label="Language">${btn('en', 'English')}${btn('lo', 'ລາວ')}</div>`;
+}
+
+// Wires the toggle. The current answer is saved BEFORE switching, so nothing a
+// candidate has typed can be lost by changing language.
+function wireLanguageToggle(onSwitched) {
+  $$('#langSwitch [data-lang]').forEach((btn) => {
+    btn.onclick = async () => {
+      const next = btn.dataset.lang;
+      if (next === STATE.language || STATE.switchingLanguage) return;
+      STATE.switchingLanguage = true;
+      $$('#langSwitch [data-lang]').forEach((b) => { b.disabled = true; });
+      try {
+        // No session yet (instructions screen): hold the choice locally and
+        // send it with /start. Nothing to persist and nothing to lose.
+        if (STATE.step === 'instructions') {
+          STATE.language = next;
+          if (typeof onSwitched === 'function') await onSwitched();
+          return;
+        }
+        // Persist whatever is on screen first.
+        if (typeof onSwitched === 'function' && onSwitched.saveFirst) await onSwitched.saveFirst();
+        const res = await exam('/language', { method: 'POST', body: JSON.stringify({ language: next }) });
+        STATE.language = res.language;
+        // The server echoes the deadline back; it must not have moved.
+        if (res.expiresAt) STATE.expiresAt = res.expiresAt;
+        if (typeof onSwitched === 'function') await onSwitched();
+      } catch (e) {
+        if (e.status === 423) return renderPaused(e.data || {});
+        if (e.status === 410) return renderTimeExpired(e.data || {});
+        toast((e.data && e.data.error) || 'Could not change language.');
+        $$('#langSwitch [data-lang]').forEach((b) => { b.disabled = false; });
+      } finally {
+        STATE.switchingLanguage = false;
+      }
+    };
+  });
 }
 
 async function boot() {
@@ -45,7 +127,11 @@ async function boot() {
     if (info.session && info.session.status === 'TERMINATED') return renderTerminated(info.session);
     if (info.session && (info.session.status === 'PAUSED' || info.session.paused)) return renderPaused(info.session);
     if (info.session && info.session.status === 'SUBMITTED') return renderDone(info.session.submittedAt);
-    if (info.session && info.session.status === 'IN_PROGRESS') { STATE.expiresAt = info.session.scheduledEndAt || info.session.expiresAt; return renderQuestionFlow(info); }
+    if (info.session && info.session.status === 'IN_PROGRESS') {
+      STATE.expiresAt = info.session.scheduledEndAt || info.session.expiresAt;
+      if (info.session.language) STATE.language = info.session.language;
+      return renderQuestionFlow(info);
+    }
     renderInstructions(info);
   } catch (e) {
     // The server finalizes an expired assessment on any request, so this is the
@@ -57,6 +143,7 @@ async function boot() {
 }
 
 function renderInstructions(info) {
+  STATE.step = 'instructions'; // no session yet: the language choice is local
   const v = info.verification;
   shell(`
     <h2 style="margin-bottom:6px;">Candidate Assessment</h2>
@@ -83,13 +170,16 @@ function renderInstructions(info) {
     <p class="faint" id="startErr" style="color:var(--danger);"></p>
   `, { nav: `<div class="pnav"><button class="btn btn-primary" id="startBtn" disabled>Start Assessment</button></div>` });
   $('#ack').onchange = (e) => { $('#startBtn').disabled = !e.target.checked; };
+  // Before the assessment exists there is no session to persist to, so the
+  // choice is held client-side and sent with /start.
+  wireLanguageToggle(() => renderInstructions(info));
   $('#startBtn').onclick = async () => {
     // Already guarded: disabling here means a second tap is a no-op, so a
     // double tap cannot create two sessions.
     if ($('#startBtn').disabled) return;
     $('#startBtn').disabled = true; $('#startBtn').textContent = 'Starting…';
     try {
-      const body = {};
+      const body = { language: STATE.language };
       if (v.requireCandidateId) body.candidateCode = $('#vCode').value;
       if (v.requirePhone) body.phone = $('#vPhone').value;
       if (v.requireDob) body.dob = $('#vDob').value;
@@ -144,23 +234,26 @@ async function showQuestion() {
   const isEssay = q.type === 'ESSAY';
   let body;
   if (isEssay) {
-    body = `<div class="faint" style="margin-bottom:6px;">Question ${STATE.idx + 1} of ${total} — Written response</div>
+    body = `${laoBannerHTML(q)}<div class="faint" style="margin-bottom:6px;">${t('questionOf', STATE.idx + 1, total)} — ${t('writtenResponse')}</div>
       <p style="font-size:14.5px;margin-bottom:14px;">${esc(q.text)}</p>
       <textarea id="ans" style="min-height:220px;" placeholder="Write your answer here...">${savedAnswer ? esc(savedAnswer.text) : ''}</textarea>
-      <div class="faint" style="margin-top:6px;">Answer autosaves as you type.</div>`;
+      <div class="faint" style="margin-top:6px;">${t('autosave')}</div>`;
   } else {
-    body = `<div class="faint" style="margin-bottom:6px;">Question ${STATE.idx + 1} of ${total}</div>
+    body = `${laoBannerHTML(q)}<div class="faint" style="margin-bottom:6px;">${t('questionOf', STATE.idx + 1, total)}</div>
       <p style="font-size:14.5px;margin-bottom:14px;">${esc(q.text)}</p>
       ${q.parts.map((p) => {
         const existing = savedAnswer ? savedAnswer[p.key] : '';
-        if (p.type === 'choice') return `<div class="field"><label class="field-label">${esc(p.label)}</label>${p.options.map((o) => `<label class="qopt ${existing === o ? 'checked' : ''}"><input type="radio" name="opt_${p.key}" value="${esc(o)}" ${existing === o ? 'checked' : ''}><span>${esc(o)}</span></label>`).join('')}</div>`;
+        // Options arrive as {value,label}. The VALUE is the canonical English
+        // string the server grades against, so it is what gets submitted; only
+        // the label is translated. Switching language cannot change a mark.
+        if (p.type === 'choice') return `<div class="field"><label class="field-label">${esc(p.label)}</label>${p.options.map((o) => `<label class="qopt ${existing === o.value ? 'checked' : ''}"><input type="radio" name="opt_${p.key}" value="${esc(o.value)}" ${existing === o.value ? 'checked' : ''}><span>${esc(o.label)}</span></label>`).join('')}</div>`;
         return `<div class="field"><label class="field-label">${esc(p.label)}</label><input type="number" step="0.01" inputmode="decimal" id="part_${p.key}" value="${existing != null && existing !== '' ? existing : ''}"></div>`;
       }).join('')}
-      <div class="faint">Answers autosave as you type.</div>`;
+      <div class="faint">${t('autosave')}</div>`;
   }
   shell(body, {
     timer: true, progress: Math.round((STATE.idx / total) * 100), stepLabel: `Question ${STATE.idx + 1} of ${total}`,
-    nav: `<div class="pnav">${STATE.idx > 0 ? '<button class="btn" id="prevBtn">Previous</button>' : ''}<button class="btn btn-primary" id="nextBtn">${STATE.idx === total - 1 ? 'Review Answers' : 'Next'}</button></div>`,
+    nav: `<div class="pnav">${STATE.idx > 0 ? `<button class="btn" id="prevBtn">${t('previous')}</button>` : ''}<button class="btn btn-primary" id="nextBtn">${STATE.idx === total - 1 ? t('review') : t('next')}</button></div>`,
   });
   startTimer();
 
@@ -218,8 +311,23 @@ async function showQuestion() {
       if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = label; }
     }
   }
+  // Switching language saves the current answer first, then re-renders THIS
+  // question in the new language: same index, same saved answer, same timer.
+  const reRender = () => showQuestion();
+  reRender.saveFirst = saveAnswer;
+  wireLanguageToggle(reRender);
+
   if ($('#prevBtn')) $('#prevBtn').onclick = () => navigate(-1);
   $('#nextBtn').onclick = () => navigate(1);
+}
+
+// Shown when Lao is selected but this question has no APPROVED translation.
+// The English text is displayed beneath it, clearly labelled — never English
+// passed off as Lao, and never machine-generated text.
+function laoBannerHTML(q) {
+  if (!q || !q.laoUnavailable) return '';
+  return `<div class="card" style="background:var(--warning-bg);border:1px solid var(--gold);margin-bottom:12px;padding:10px 12px;">
+    <b>ບໍ່ມີການແປພາສາລາວ</b><div class="faint" style="margin-top:4px;">${esc(t('laoUnavailable'))}</div></div>`;
 }
 
 async function showReview() {

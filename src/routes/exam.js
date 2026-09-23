@@ -3,6 +3,7 @@ const db = require('../db');
 const { generateId } = require('../lib/tokens');
 const { finalizeSession, finalizeIfExpired, isExpired, displayStatus } = require('../lib/finalize');
 const { isPaused, linkLiveStatus, remainingSeconds } = require('../lib/examControl');
+const { resolveQuestionText, normaliseLanguage, DEFAULT_LANGUAGE } = require('../lib/questionText');
 const { examLimiter } = require('../middleware/auth');
 const { audit } = require('../lib/audit');
 
@@ -18,22 +19,39 @@ function settings() { return db.prepare('SELECT * FROM settings WHERE id = 1').g
 
 // Strips everything an evaluator needs but a candidate must never receive:
 // correct answers, tolerances, marking weights per step's expected value, explanations.
-function sanitizeQuestionForCandidate(q) {
+function sanitizeQuestionForCandidate(q, language) {
   const config = JSON.parse(q.config_json);
+  // English is the source; Lao is shown only when a human has APPROVED it.
+  const t = resolveQuestionText(q, language);
+
+  const common = {
+    id: q.id,                    // same question ID in either language
+    text: t.text,
+    maxMarks: q.max_marks,
+    language: t.language,
+    // Lets the portal say "Lao translation not available" rather than showing
+    // English while implying it is Lao.
+    laoUnavailable: t.laoMissing,
+  };
+
   if (q.type === 'CALC') {
     return {
-      id: q.id, type: 'CALC', text: q.text, maxMarks: q.max_marks,
+      ...common,
+      type: 'CALC',
       parts: config.parts.map((p) => ({
-        key: p.key, label: p.label,
+        key: p.key,
+        label: t.partLabel(p),
         type: p.type === 'choice' ? 'choice' : 'number',
-        options: p.type === 'choice' ? p.options : undefined,
+        // {value,label}: VALUE is the canonical English string grading compares
+        // against, so translating a label can never change a mark.
+        options: p.type === 'choice' ? t.partOptions(p) : undefined,
         // marks-per-part shown so the candidate understands question weight, NOT the expected value or tolerance
         marks: p.marks,
       })),
     };
   }
-  // ESSAY
-  return { id: q.id, type: 'ESSAY', text: q.text, maxMarks: q.max_marks };
+  // ESSAY — marking is unchanged; only the stem is translated.
+  return { ...common, type: 'ESSAY' };
 }
 
 function getLinkByToken(token) {
@@ -110,6 +128,7 @@ function respondWithCandidateContext(req, res, link, session) {
       submittedAt: session.submitted_at,
       answered: session.answered_count,
       unanswered: session.unanswered_count,
+      language: session.language || DEFAULT_LANGUAGE,
     } : null,
   });
 }
@@ -155,14 +174,16 @@ router.post('/:token/start', (req, res) => {
   const id = generateId('sess');
   const now = new Date();
   const expiresAt = new Date(now.getTime() + s.assessment_duration_minutes * 60000).toISOString();
+  // The language chosen on the instructions screen carries into the session.
+  const startLanguage = normaliseLanguage(b.language);
   db.prepare(
-    `INSERT INTO assessment_sessions (id, candidate_id, link_id, started_at, duration_minutes, expires_at, status, verified)
-     VALUES (?,?,?,?,?,?,'IN_PROGRESS',1)`
-  ).run(id, c.id, link.id, now.toISOString(), s.assessment_duration_minutes, expiresAt);
+    `INSERT INTO assessment_sessions (id, candidate_id, link_id, started_at, duration_minutes, expires_at, status, verified, language)
+     VALUES (?,?,?,?,?,?,'IN_PROGRESS',1,?)`
+  ).run(id, c.id, link.id, now.toISOString(), s.assessment_duration_minutes, expiresAt, startLanguage);
   db.prepare(`UPDATE assessment_links SET status='USED' WHERE id=?`).run(link.id);
   db.prepare(`UPDATE candidates SET status='ASSESSMENT_STARTED' WHERE id=?`).run(c.id);
   audit({ userName: 'Candidate (public exam)', role: 'CANDIDATE', action: 'Assessment started', target: c.code, ip: req.ip });
-  res.json({ started: true, expiresAt, scheduledEndAt: expiresAt });
+  res.json({ started: true, expiresAt, scheduledEndAt: expiresAt, language: startLanguage });
 }
 );
 
@@ -216,10 +237,14 @@ function requireActiveSession(req, res, next) {
 
 // ---- Get question list (sanitized) + current answers for review/navigation ----
 router.get('/:token/questions', requireActiveSession, (req, res) => {
-  const questions = db.prepare(`SELECT * FROM questions WHERE active = 1 ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`).all();
+  // An archived question is withdrawn from new assessments but never deleted,
+  // so completed assessments keep referencing it.
+  const questions = db.prepare(`SELECT * FROM questions WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`).all();
   const answers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(req.session_.id);
+  const lang = req.session_.language || DEFAULT_LANGUAGE;
   res.json({
-    questions: questions.map(sanitizeQuestionForCandidate),
+    language: lang,
+    questions: questions.map((q) => sanitizeQuestionForCandidate(q, lang)),
     answered: answers.filter((a) => a.answer_json && a.answer_json !== '{}').map((a) => a.question_id),
     expiresAt: req.session_.expires_at,
   });
@@ -237,7 +262,10 @@ router.get('/:token/question/:qid', requireActiveSession, (req, res) => {
   } else {
     db.prepare('UPDATE candidate_answers SET visits = visits + 1 WHERE id = ?').run(ans.id);
   }
-  res.json({ question: sanitizeQuestionForCandidate(q), savedAnswer: ans.answer_json ? JSON.parse(ans.answer_json) : null });
+  res.json({
+    question: sanitizeQuestionForCandidate(q, req.session_.language || DEFAULT_LANGUAGE),
+    savedAnswer: ans.answer_json ? JSON.parse(ans.answer_json) : null,
+  });
 });
 
 // ---- Save / autosave an answer ----
@@ -260,6 +288,27 @@ router.post('/:token/answer', requireActiveSession, (req, res) => {
     ).run(id, req.session_.id, questionId, JSON.stringify(answer), now, now, now, Math.max(0, Number(timeSpentDeltaSeconds) || 0));
   }
   res.json({ ok: true });
+});
+
+// ---- Language switch ----
+// Presentation only. Same session, same question IDs, same saved answers, same
+// deadline, same marking — and it never submits anything.
+router.post('/:token/language', requireActiveSession, (req, res) => {
+  const language = normaliseLanguage((req.body || {}).language);
+  const before = req.session_;
+
+  db.prepare('UPDATE assessment_sessions SET language = ? WHERE id = ?').run(language, before.id);
+
+  const after = db.prepare('SELECT * FROM assessment_sessions WHERE id = ?').get(before.id);
+  res.json({
+    ok: true,
+    language,
+    // Echoed back so the client can verify nothing moved.
+    expiresAt: after.expires_at,
+    scheduledEndAt: after.expires_at,
+    deadlineUnchanged: after.expires_at === before.expires_at,
+    status: after.status,
+  });
 });
 
 // ---- Integrity signal reporting (paste / focus events) ----

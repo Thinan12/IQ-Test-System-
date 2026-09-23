@@ -28,6 +28,22 @@ ensureColumn('assessment_sessions', 'submission_reason', 'TEXT');
 ensureColumn('assessment_sessions', 'answered_count', 'INTEGER');
 ensureColumn('assessment_sessions', 'unanswered_count', 'INTEGER');
 
+// Bilingual question bank. Every column is additive and nullable, so existing
+// questions keep their IDs, English text, answer keys, marking rules and
+// history untouched. Lao stays empty until a human enters and approves it —
+// nothing is auto-translated.
+ensureColumn('questions', 'text_lo', 'TEXT');
+ensureColumn('questions', 'config_lo_json', 'TEXT');
+ensureColumn('questions', 'translation_status', "TEXT NOT NULL DEFAULT 'MISSING'");
+ensureColumn('questions', 'translation_updated_by', 'TEXT');
+ensureColumn('questions', 'translation_updated_at', 'TEXT');
+ensureColumn('questions', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('questions', 'archived_at', 'TEXT');
+ensureColumn('questions', 'archived_by', 'TEXT');
+
+// Candidate display language for a session. Presentation only.
+ensureColumn('assessment_sessions', 'language', "TEXT NOT NULL DEFAULT 'en'");
+
 // Priority 1 — candidate archiving.
 ensureColumn('users', 'token_version', 'INTEGER NOT NULL DEFAULT 0');
 

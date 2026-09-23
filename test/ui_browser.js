@@ -275,6 +275,131 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(pdfSize > 500, 'Download PDF produced a non-empty file', pdfSize + ' bytes');
     check(pdfPath && require('fs').readFileSync(pdfPath).slice(0, 5).toString() === '%PDF-', 'and it is a real PDF');
 
+    // -------------------------------------------- Question Bank (bilingual)
+    head('Question Bank — create, edit, archive, restore in the real UI');
+    await page.click('.sidebar-nav a[data-nav="questions"]');
+    await page.waitForSelector('#newQBtn', { timeout: 10000 });
+    const qBefore = one('SELECT COUNT(*) FROM questions');
+
+    await page.click('#newQBtn');
+    await page.waitForSelector('#qText');
+    await page.fill('#qText', 'Browser bilingual question: what is 10% of 1000?');
+    await page.fill('#qTextLo', 'ຄຳຖາມທົດສອບຈາກຕົວທ່ອງເວັບ');
+    await page.selectOption('#qStatus', 'APPROVED');
+    await page.fill('#qCategory', 'Browser Test');
+    await page.fill('#qConfig', JSON.stringify({ parts: [{ key: 'answer', label: 'Answer (USD)', marks: 5, expected: 100, tol: 1 }] }, null, 2));
+    await page.fill('#qConfigLo', JSON.stringify({ parts: { answer: { label: 'ຄຳຕອບ (USD)' } } }, null, 2));
+    await page.click('#qSave');
+    await page.waitForTimeout(1800);
+
+    const madeQ = db.prepare("SELECT * FROM questions WHERE category = 'Browser Test'").get();
+    check(!!madeQ, 'clicking Create made a question row');
+    check(one('SELECT COUNT(*) FROM questions') === qBefore + 1, 'exactly one question was added');
+    check(madeQ && madeQ.max_marks === 5, 'marks were computed from the parts server-side', madeQ && String(madeQ.max_marks));
+    check(madeQ && madeQ.translation_status === 'APPROVED', 'the translation status was stored');
+    check(madeQ && !!madeQ.text_lo, 'the Lao text was stored on the SAME row');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='Question created' AND target=?", madeQ ? madeQ.id : '') > 0,
+      'question creation is audited');
+    const cardText = await page.locator('#qBody').innerText();
+    check(cardText.includes('Browser bilingual question'), 'the English question appears in the list');
+    check(cardText.includes('ຄຳຖາມທົດສອບຈາກຕົວທ່ອງເວັບ'), 'and the Lao appears beside it');
+
+    await page.click(`button[data-qact="edit"][data-qid="${madeQ.id}"]`);
+    await page.waitForSelector('#qText');
+    await page.fill('#qCategory', 'Browser Test Edited');
+    await page.click('#qSave');
+    await page.waitForTimeout(1800);
+    check(one('SELECT category FROM questions WHERE id = ?', madeQ.id) === 'Browser Test Edited',
+      'clicking Save changed the question');
+
+    page.once('dialog', (d) => d.accept());
+    await page.click(`button[data-qact="archive"][data-qid="${madeQ.id}"]`);
+    await page.waitForTimeout(1800);
+    check(one('SELECT archived FROM questions WHERE id = ?', madeQ.id) === 1, 'clicking Archive archived it');
+    check(one('SELECT COUNT(*) FROM questions WHERE id = ?', madeQ.id) === 1, 'and did NOT delete the row');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='QUESTION_ARCHIVED'") > 0, 'archiving is audited');
+
+    await page.selectOption('#qArchived', '1');
+    await page.waitForTimeout(1400);
+    await page.click(`button[data-qact="restore"][data-qid="${madeQ.id}"]`);
+    await page.waitForTimeout(1800);
+    check(one('SELECT archived FROM questions WHERE id = ?', madeQ.id) === 0, 'clicking Restore restored it');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='QUESTION_RESTORED'") > 0, 'restoring is audited');
+
+    // Archive it again so it does not join the candidate exam below and change
+    // which question appears first.
+    await page.evaluate(async (id) => { await api('/questions/' + id + '/archive', { method: 'POST' }); }, madeQ.id);
+    check(one('SELECT archived FROM questions WHERE id = ?', madeQ.id) === 1, 'the test question is parked out of the candidate exam');
+
+    // ------------------------------------------- candidate language switching
+    head('Candidate language switch in a real browser');
+    const langCtx = await browser.newContext();
+    const lp = await langCtx.newPage();
+    const langErrors = [];
+    lp.on('pageerror', (e) => langErrors.push('pageerror: ' + e.message));
+    lp.on('console', (m) => { if (m.type() === 'error') langErrors.push(m.text()); });
+
+    // A LOCAL test candidate on this throwaway server. No production data.
+    const langCand = await page.evaluate(async () => {
+      const r = await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName: 'Language Switch Candidate', applicationType: 'NORMAL', iq: 110, education: 'Bachelor Degree' }) });
+      const l = await api('/candidates/' + r.id + '/links', { method: 'POST' });
+      return { id: r.id, code: r.code, token: l.token };
+    });
+    check(!!langCand.token, 'a local test candidate and link were created');
+
+    await lp.goto(`${BASE}/exam/${langCand.token}`, { waitUntil: 'networkidle' });
+    check(await lp.locator('#langSwitch').isVisible(), 'the English | ລາວ switch is offered before starting');
+
+    await lp.click('#langSwitch [data-lang="lo"]');
+    await lp.waitForTimeout(600);
+    await lp.fill('#vCode', langCand.code);
+    await lp.check('#ack');
+    await lp.click('#startBtn');
+    await lp.waitForSelector('#nextBtn', { timeout: 15000 });
+    const langSession = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ?').get(langCand.id);
+    check(langSession && langSession.language === 'lo', 'the pre-exam language choice reached the session', langSession && langSession.language);
+
+    await lp.click('#langSwitch [data-lang="en"]');
+    await lp.waitForTimeout(1200);
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', langSession.id) === 'en',
+      'switching during the exam updates the session language');
+
+    const nums = await lp.$$('input[type="number"]');
+    check(nums.length > 0, 'the first question renders at least one numeric input', 'found ' + nums.length);
+    await nums[0].fill('3000');
+    if (nums.length >= 2) await nums[1].fill('18000');
+    await lp.waitForTimeout(1500);
+    const answersBefore = one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND answer_json IS NOT NULL', langSession.id);
+    const deadlineBefore = one('SELECT expires_at FROM assessment_sessions WHERE id = ?', langSession.id);
+    const statusBefore = one('SELECT status FROM assessment_sessions WHERE id = ?', langSession.id);
+    check(answersBefore > 0, 'an answer was autosaved before switching');
+
+    await lp.click('#langSwitch [data-lang="lo"]');
+    await lp.waitForTimeout(1600);
+
+    check(one('SELECT expires_at FROM assessment_sessions WHERE id = ?', langSession.id) === deadlineBefore,
+      'DEADLINE unchanged after switching language');
+    check(one('SELECT status FROM assessment_sessions WHERE id = ?', langSession.id) === statusBefore,
+      'the assessment was NOT submitted by switching language');
+    check(one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND answer_json IS NOT NULL', langSession.id) === answersBefore,
+      'ANSWERS preserved after switching to Lao');
+    const shownAfter = await lp.locator('input[type="number"]').first().inputValue();
+    check(shownAfter === '3000', 'the typed answer is still on screen in Lao', JSON.stringify(shownAfter));
+    const timerAfter = ((await lp.locator('#timer').textContent()) || '').trim();
+    check(/^\d{2}:\d{2}$/.test(timerAfter), 'the countdown is still running, not reset', JSON.stringify(timerAfter));
+    check(timerAfter !== '--:--', 'and did not fall back to a placeholder');
+
+    await lp.click('#langSwitch [data-lang="en"]');
+    await lp.waitForTimeout(1600);
+    const shownBack = await lp.locator('input[type="number"]').first().inputValue();
+    check(shownBack === '3000', 'the answer survives switching back to English', JSON.stringify(shownBack));
+    check(one('SELECT COUNT(*) FROM assessment_sessions WHERE candidate_id = ?', langCand.id) === 1,
+      'no extra session was created by any of the switching');
+
+    const realErrorsLang = langErrors.filter((e) => !/favicon|status of 40[019]/i.test(e));
+    check(realErrorsLang.length === 0, 'no console errors during language switching', realErrorsLang.slice(0, 3).join(' | '));
+    await langCtx.close();
+
     // ------------------------------------------------------------- modals
     head('Modals close cleanly');
     await page.click('.sidebar-nav a[data-nav="candidates"]');
