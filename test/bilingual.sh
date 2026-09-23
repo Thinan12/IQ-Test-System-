@@ -182,6 +182,12 @@ expect_eq "choice values stay canonical English in Lao mode" '"value":"Reject"' 
 c_head "LAO DISPLAY — an approved question really does render in Lao"
 # Restore the bilingual question and make it the one served.
 http_body POST "$BASE/api/admin/questions/$QID/restore" "$HR" > /dev/null
+# Writing a question into the bank no longer puts it in front of candidates —
+# an assessment has to include it. Attach it to the assessment being sat.
+BIL_ASMT=$(dbq "SELECT assessment_id AS v FROM assessment_links WHERE token = '$T1'")
+BIL_QIDS=$(dbq "SELECT '[\"' || REPLACE(GROUP_CONCAT(question_id), ',', '\",\"') || '\"]' AS v FROM (SELECT question_id FROM assessment_questions WHERE assessment_id = '$BIL_ASMT' ORDER BY order_index)")
+post_json PATCH "$BASE/api/admin/assessments/$BIL_ASMT" "$HR" "{\"questionIds\": $(printf '%s' "$BIL_QIDS" | sed "s/\]$/,\"$QID\"]/")}" > /dev/null
+expect_eq "the restored bilingual question is part of the assessment being sat" 1   "$(dbq "SELECT COUNT(*) AS v FROM assessment_questions WHERE assessment_id = '$BIL_ASMT' AND question_id = '$QID'")"
 QL_LO2=$(http_body GET "$BASE/api/exam/$T1/questions")
 BIL=$(jsonval "$QL_LO2" "JSON.stringify(d.questions.filter(q=>q.id==='$QID')[0]||{})")
 expect_contains "the approved Lao question stem is served" "$LAO_Q" "$BIL"

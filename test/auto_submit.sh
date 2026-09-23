@@ -16,9 +16,10 @@ SUPER=$(login_token superadmin@lalco.demo "$DEMO_PASSWORD")
 HR=$(login_token hradmin@lalco.demo "$DEMO_PASSWORD")
 [ -n "$SUPER" ] || { c_red "could not log in"; server_log; exit 1; }
 
-# 1-minute exam, 10-minute invitation link.
-http_body PUT "$BASE/api/admin/settings" "$SUPER" '{"assessmentDurationMinutes":1,"linkExpiryMinutes":10}' > /dev/null
-expect_eq "assessment duration configured to 1 minute" 1 "$(dbq 'SELECT assessment_duration_minutes AS v FROM settings WHERE id = 1')"
+# 1-minute exam, 10-minute invitation link. The assessment owns both timers.
+AS_ASMT=$(dbq 'SELECT id AS v FROM assessments ORDER BY created_at LIMIT 1')
+http_body PATCH "$BASE/api/admin/assessments/$AS_ASMT" "$SUPER" '{"duration_minutes":1,"link_expiry_minutes":10}' > /dev/null
+expect_eq "assessment duration configured to 1 minute" 1 "$(dbq "SELECT duration_minutes AS v FROM assessments WHERE id = '$AS_ASMT'")"
 
 # Answer only SOME questions, so answered/unanswered can be told apart.
 partial_attempt() { # partial_attempt <token> <code> <how-many-calc-questions>
@@ -188,6 +189,6 @@ expect_eq "the session was finalized anyway" "AUTO_SUBMITTED" "$(dbq "SELECT sub
 expect_eq "only the 1 genuinely saved answer counts" 1 "$(dbq "SELECT answered_count AS v FROM assessment_sessions WHERE id = '$SESSION_E'")"
 
 # Restore the normal exam duration for any later suite reusing this database.
-http_body PUT "$BASE/api/admin/settings" "$SUPER" '{"assessmentDurationMinutes":45}' > /dev/null
+http_body PATCH "$BASE/api/admin/assessments/$AS_ASMT" "$SUPER" '{"duration_minutes":45}' > /dev/null
 
 summary "AUTO-SUBMIT ON TIME EXPIRY (sections 1-8)"

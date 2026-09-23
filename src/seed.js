@@ -190,6 +190,29 @@ function seedQuestions() {
   console.log('Seeded question bank (6 calculation questions + 1 essay question).');
 }
 
+// The default assessment is created by the migration in db.js, which on a brand
+// new database runs BEFORE this seed and therefore finds no questions to attach.
+// Attach them here, once the bank exists. Only an assessment that still has no
+// questions and has never been edited is touched, so an assessment someone
+// deliberately emptied is left alone.
+function seedAssessmentQuestions() {
+  const targets = db.prepare(
+    `SELECT a.id FROM assessments a
+      WHERE a.created_by = 'System (migration)'
+        AND a.updated_at = a.created_at
+        AND NOT EXISTS (SELECT 1 FROM assessment_questions aq WHERE aq.assessment_id = a.id)`
+  ).all();
+  if (targets.length === 0) return;
+  const questions = db.prepare(
+    `SELECT id FROM questions
+      WHERE active = 1 AND COALESCE(archived,0) = 0
+      ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`
+  ).all();
+  const attach = db.prepare('INSERT OR IGNORE INTO assessment_questions (assessment_id, question_id, order_index) VALUES (?,?,?)');
+  targets.forEach((a) => questions.forEach((q, i) => attach.run(a.id, q.id, i)));
+  console.log(`Attached ${questions.length} questions to the default assessment.`);
+}
+
 function seedInterview() {
   if (db.prepare('SELECT COUNT(*) AS n FROM interview_questions').get().n > 0) return;
   const qs = [
@@ -367,6 +390,7 @@ const wantsDemo = process.argv.includes('--demo')
 const runSeed = db.transaction(() => {
   seedUsers(seedPassword);
   seedQuestions();
+  seedAssessmentQuestions();
   seedInterview();
   seedScholarship();
   if (wantsDemo) {

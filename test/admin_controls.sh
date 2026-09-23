@@ -98,17 +98,21 @@ expect_eq "a revoked link cannot be re-enabled" 409 "$(http_code POST "$BASE$EC/
 expect_eq "a revoked link cannot be extended" 409 "$(http_code POST "$BASE$EC/links/$L4/extend" "$HR" '{"addMinutes":10}')"
 
 c_head "P2. INVITATION EXPIRY IS CONFIGURABLE AND PER-LINK"
-http_body PUT "$BASE/api/admin/settings" "$SUPER" '{"linkExpiryMinutes":5}' > /dev/null
+# Since assessment management, the ASSESSMENT owns the invitation window; the
+# value in Settings is only the default a new assessment starts with.
+ASMT=$(dbq 'SELECT id AS v FROM assessments ORDER BY created_at LIMIT 1')
+http_body PATCH "$BASE/api/admin/assessments/$ASMT" "$SUPER" '{"link_expiry_minutes":5}' > /dev/null
 L5=$(jsonval "$(http_body POST "$BASE/api/admin/candidates/$C4/links" "$HR")" 'd.id')
 EXP5=$(dbq "SELECT CAST((julianday(expires_at) - julianday(created_at)) * 24 * 60 + 0.5 AS INTEGER) AS v FROM assessment_links WHERE id = '$L5'")
-expect_eq "a 5-minute setting yields a 5-minute link" 5 "$EXP5"
-http_body PUT "$BASE/api/admin/settings" "$SUPER" '{"linkExpiryMinutes":30}' > /dev/null
+expect_eq "a 5-minute assessment setting yields a 5-minute link" 5 "$EXP5"
+http_body PATCH "$BASE/api/admin/assessments/$ASMT" "$SUPER" '{"link_expiry_minutes":30}' > /dev/null
 L6=$(jsonval "$(http_body POST "$BASE/api/admin/candidates/$C4/links" "$HR")" 'd.id')
 EXP6=$(dbq "SELECT CAST((julianday(expires_at) - julianday(created_at)) * 24 * 60 + 0.5 AS INTEGER) AS v FROM assessment_links WHERE id = '$L6'")
-expect_eq "a 30-minute setting yields a 30-minute link" 30 "$EXP6"
+expect_eq "a 30-minute assessment setting yields a 30-minute link" 30 "$EXP6"
 EXP5_AGAIN=$(dbq "SELECT CAST((julianday(expires_at) - julianday(created_at)) * 24 * 60 + 0.5 AS INTEGER) AS v FROM assessment_links WHERE id = '$L5'")
 expect_eq "the earlier link kept its own 5-minute expiry" 5 "$EXP5_AGAIN"
-http_body PUT "$BASE/api/admin/settings" "$SUPER" '{"linkExpiryMinutes":10}' > /dev/null
+expect_eq "the global setting did not change the assessment" 10 "$(dbq 'SELECT link_expiry_minutes AS v FROM settings WHERE id = 1')"
+http_body PATCH "$BASE/api/admin/assessments/$ASMT" "$SUPER" '{"link_expiry_minutes":10}' > /dev/null
 
 # ===========================================================================
 c_head "P3/P4. LIVE ASSESSMENTS dashboard"

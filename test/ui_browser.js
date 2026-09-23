@@ -400,6 +400,150 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(realErrorsLang.length === 0, 'no console errors during language switching', realErrorsLang.slice(0, 3).join(' | '));
     await langCtx.close();
 
+    // ------------------------------------------ Assessment Management (P2)
+    head('Assessment Management — the full 11-step flow through the real UI');
+    await page.click('.sidebar-nav a[data-nav="assessments"]');
+    await page.waitForSelector('#newAsmtBtn', { timeout: 10000 });
+    check(true, '1. the Assessments screen loads with a New Assessment button');
+
+    const listText = await page.locator('#content').innerText();
+    check(listText.includes('LALCO Recruitment Assessment'), '2. the existing assessment is listed');
+    check(listText.includes('ACTIVE'), 'its status is shown');
+    check(/45 min/.test(listText), 'its exam duration is shown');
+    check(/10 min/.test(listText), 'its invitation expiry is shown');
+    check(/\b70\b/.test(listText), 'its pass threshold is shown');
+
+    // 3. create a new assessment through the real form
+    const asmtBefore = one('SELECT COUNT(*) FROM assessments');
+    await page.click('#newAsmtBtn');
+    await page.waitForSelector('#aName');
+    await page.fill('#aName', 'Browser Assessment');
+    await page.fill('#aDesc', 'Created by the browser test.');
+    await page.fill('#aDuration', '30');
+    await page.fill('#aExpiry', '8');
+    await page.fill('#aCalc', '20');
+    await page.fill('#aWritten', '20');
+    await page.fill('#aInterview', '20');
+    await page.fill('#aTotal', '60');
+    await page.fill('#aThreshold', '36');
+    // Pick two questions and put them in a deliberate order.
+    const useBoxes = await page.$$('#aQuestions .aq-use');
+    const orderInputs = await page.$$('#aQuestions .aq-order');
+    await useBoxes[0].check();
+    await useBoxes[1].check();
+    await orderInputs[0].fill('1');
+    await orderInputs[1].fill('0');
+    await page.click('#aSave');
+    await page.waitForTimeout(1800);
+
+    const madeA = db.prepare("SELECT * FROM assessments WHERE name = 'Browser Assessment'").get();
+    check(!!madeA, '3. clicking Create made an assessment row');
+    check(one('SELECT COUNT(*) FROM assessments') === asmtBefore + 1, 'exactly one assessment was added');
+    check(madeA && madeA.duration_minutes === 30, 'the exam duration was saved', madeA && String(madeA.duration_minutes));
+    check(madeA && madeA.link_expiry_minutes === 8, 'the invitation expiry was saved separately');
+    check(madeA && madeA.pass_threshold === 36 && madeA.total_max === 60, 'the scoring was saved');
+    check(madeA && madeA.eligibility_rules_id === 1, 'the eligibility policy was saved');
+    check(one('SELECT COUNT(*) FROM assessment_questions WHERE assessment_id = ?', madeA.id) === 2,
+      '4. the two chosen questions were attached');
+    const orderedIds = db.prepare('SELECT question_id FROM assessment_questions WHERE assessment_id = ? ORDER BY order_index').all(madeA.id).map((r) => r.question_id);
+    const bankIds = await page.evaluate(async () => (await api('/questions')).questions.map((q) => q.id));
+    check(orderedIds[0] === bankIds[1] && orderedIds[1] === bankIds[0],
+      'and in the order typed into the Order column, not the bank order', orderedIds.join(','));
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='ASSESSMENT_CREATED' AND target=?", madeA.id) > 0,
+      'creating it is audited');
+
+    // 5. search
+    await page.fill('#aSearch', 'Browser Assessment');
+    await page.waitForTimeout(900);
+    const searched = await page.locator('#content').innerText();
+    check(searched.includes('Browser Assessment'), '5. search finds it');
+    check(!searched.includes('LALCO Recruitment Assessment'), 'and filters the others out');
+    await page.fill('#aSearch', '');
+    await page.waitForTimeout(900);
+
+    // 6. view (read-only)
+    await page.click(`button[data-aact="view"][data-aid="${madeA.id}"]`);
+    await page.waitForSelector('#aName');
+    check(await page.locator('#aName').isDisabled(), '6. View opens the configuration read-only');
+    check(!(await page.locator('#aSave').count()), 'with no Save button to press by accident');
+    await page.click('#aCancel');
+    await page.waitForTimeout(500);
+
+    // 7. edit
+    await page.click(`button[data-aact="edit"][data-aid="${madeA.id}"]`);
+    await page.waitForSelector('#aName');
+    check(!(await page.locator('#aName').isDisabled()), '7. Edit opens the same form, editable');
+    check((await page.locator('#aDuration').inputValue()) === '30', 'pre-filled with what is stored');
+    await page.fill('#aDuration', '35');
+    await page.click('#aSave');
+    await page.waitForTimeout(1800);
+    check(one('SELECT duration_minutes FROM assessments WHERE id = ?', madeA.id) === 35,
+      'clicking Save changed the assessment');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='ASSESSMENT_TIMING_CHANGED' AND target=?", madeA.id) > 0,
+      'the timing change is audited on its own line');
+
+    // 8. duplicate (the copy is named through a prompt)
+    page.once('dialog', (d) => d.accept('Browser Assessment Copy'));
+    await page.click(`button[data-aact="duplicate"][data-aid="${madeA.id}"]`);
+    await page.waitForTimeout(2000);
+    const copyA = db.prepare("SELECT * FROM assessments WHERE name = 'Browser Assessment Copy'").get();
+    check(!!copyA, '8. Duplicate made a copy');
+    check(copyA && copyA.id !== madeA.id, 'with its own id');
+    check(copyA && copyA.active === 0, 'and it starts inactive so it is reviewed first');
+    check(copyA && one('SELECT COUNT(*) FROM assessment_questions WHERE assessment_id = ?', copyA.id) === 2,
+      'the question references came with it');
+    check(one('SELECT COUNT(*) FROM assessment_sessions WHERE assessment_id = ?', copyA.id) === 0,
+      'but no candidate history did');
+
+    // 9. deactivate / activate
+    page.once('dialog', (d) => d.accept());
+    await page.click(`button[data-aact="deactivate"][data-aid="${madeA.id}"]`);
+    await page.waitForTimeout(1800);
+    check(one('SELECT active FROM assessments WHERE id = ?', madeA.id) === 0, '9. Deactivate deactivated it');
+    await page.click(`button[data-aact="activate"][data-aid="${madeA.id}"]`);
+    await page.waitForTimeout(1800);
+    check(one('SELECT active FROM assessments WHERE id = ?', madeA.id) === 1, 'Activate switched it back on');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='ASSESSMENT_DEACTIVATED' AND target=?", madeA.id) > 0,
+      'both state changes are audited');
+
+    // 10. archive
+    page.once('dialog', (d) => d.accept());
+    await page.click(`button[data-aact="archive"][data-aid="${madeA.id}"]`);
+    await page.waitForTimeout(1800);
+    check(one('SELECT archived FROM assessments WHERE id = ?', madeA.id) === 1, '10. Archive archived it');
+    check(one('SELECT COUNT(*) FROM assessments WHERE id = ?', madeA.id) === 1, 'and did NOT delete the row');
+    check(one('SELECT COUNT(*) FROM assessment_questions WHERE assessment_id = ?', madeA.id) === 2,
+      'nor its question references');
+    const afterArchive = await page.locator('#content').innerText();
+    check(!afterArchive.includes('Browser Assessment\n'), 'it leaves the current list');
+
+    // 11. restore
+    await page.selectOption('#aArchived', '1');
+    await page.waitForTimeout(1400);
+    check((await page.locator('#content').innerText()).includes('Browser Assessment'),
+      '11. it is findable under Archived');
+    await page.click(`button[data-aact="restore"][data-aid="${madeA.id}"]`);
+    await page.waitForTimeout(1800);
+    check(one('SELECT archived FROM assessments WHERE id = ?', madeA.id) === 0, 'Restore restored it');
+    check(one('SELECT active FROM assessments WHERE id = ?', madeA.id) === 0,
+      'and it comes back inactive, awaiting a decision');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='ASSESSMENT_RESTORED' AND target=?", madeA.id) > 0,
+      'restoring is audited');
+
+    // a refusal surfaces as a message, not a silent no-op
+    await page.selectOption('#aArchived', '');
+    await page.waitForTimeout(1200);
+    await page.click(`button[data-aact="edit"][data-aid="${madeA.id}"]`);
+    await page.waitForSelector('#aName');
+    await page.fill('#aTotal', '999');
+    await page.click('#aSave');
+    await page.waitForTimeout(1600);
+    const toastText = await page.locator('.toast').first().innerText().catch(() => '');
+    check(/total|threshold|equal/i.test(toastText), 'an invalid configuration is refused with a readable message', JSON.stringify(toastText));
+    check(one('SELECT total_max FROM assessments WHERE id = ?', madeA.id) === 60, 'and nothing was saved');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(600);
+
     // ------------------------------------------------------------- modals
     head('Modals close cleanly');
     await page.click('.sidebar-nav a[data-nav="candidates"]');

@@ -88,6 +88,16 @@ dbq() { # dbq <sql returning one row with one column>
   " "$1" )
 }
 
+# Write counterpart, for putting the database into a state the API deliberately
+# will not create (an invitation already in the past, say).
+dbx() { # dbx <sql statement>
+  ( cd "$BACKEND_DIR" && "$NODE" -e "
+    const Database = require('better-sqlite3');
+    const db = new Database(process.env.DATABASE_PATH);
+    db.prepare(process.argv[1]).run();
+  " "$1" )
+}
+
 # Assessment helpers -------------------------------------------------------
 # The correct answer key for the six seeded calculation questions, in order.
 CORRECT_ANSWERS=(

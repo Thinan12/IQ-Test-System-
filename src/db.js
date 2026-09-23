@@ -44,6 +44,8 @@ ensureColumn('questions', 'archived_by', 'TEXT');
 // Candidate display language for a session. Presentation only.
 ensureColumn('assessment_sessions', 'language', "TEXT NOT NULL DEFAULT 'en'");
 
+
+
 // Priority 1 — candidate archiving.
 ensureColumn('users', 'token_version', 'INTEGER NOT NULL DEFAULT 0');
 
@@ -76,5 +78,64 @@ ensureColumn('assessment_sessions', 'original_expires_at', 'TEXT');
 // Ensure singleton config rows exist
 db.prepare(`INSERT OR IGNORE INTO eligibility_rules (id) VALUES (1)`).run();
 db.prepare(`INSERT OR IGNORE INTO settings (id) VALUES (1)`).run();
+
+// ---------------------------------------------------------------------------
+// Assessment entity (Phase 2). Runs AFTER the singleton config rows above,
+// because an assessment references eligibility_rules(id).
+// Additive: links and sessions gain a reference,
+// and sessions gain a snapshot of the scoring rules they were judged under.
+ensureColumn('assessment_links', 'assessment_id', 'TEXT');
+ensureColumn('assessment_sessions', 'assessment_id', 'TEXT');
+ensureColumn('assessment_sessions', 'pass_threshold', 'INTEGER');
+ensureColumn('assessment_sessions', 'total_max', 'INTEGER');
+
+// Backfill, once, inside a transaction. Before this migration an "assessment"
+// was implicit: the active questions plus the `settings` singleton. That exact
+// configuration becomes a real, named assessment, and every existing link and
+// session is attached to it — so nothing that already happened changes meaning.
+const migrateAssessments = db.transaction(() => {
+  const existing = db.prepare('SELECT COUNT(*) AS n FROM assessments').get().n;
+  if (existing === 0) {
+    const cfg = db.prepare('SELECT * FROM settings WHERE id = 1').get() || {};
+    const id = 'asmt_default';
+    db.prepare(
+      `INSERT INTO assessments (id, name, description, active, archived, duration_minutes,
+         link_expiry_minutes, calc_max, written_max, interview_max, total_max, pass_threshold,
+         eligibility_rules_id, created_by)
+       VALUES (?,?,?,1,0,?,?,?,?,?,?,?,1,'System (migration)')`
+    ).run(
+      id,
+      'LALCO Recruitment Assessment',
+      'The standard recruitment assessment. Created automatically from the existing configuration so nothing already issued or completed changes meaning.',
+      cfg.assessment_duration_minutes != null ? cfg.assessment_duration_minutes : 45,
+      cfg.link_expiry_minutes != null ? cfg.link_expiry_minutes : 10,
+      30, 30, 40, 100,
+      cfg.pass_threshold != null ? cfg.pass_threshold : 70
+    );
+
+    // Attach the question set exactly as the exam already serves it.
+    const questions = db.prepare(
+      `SELECT id FROM questions
+        WHERE active = 1 AND COALESCE(archived,0) = 0
+        ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`
+    ).all();
+    const attach = db.prepare('INSERT OR IGNORE INTO assessment_questions (assessment_id, question_id, order_index) VALUES (?,?,?)');
+    questions.forEach((q, i) => attach.run(id, q.id, i));
+  }
+
+  const defaultId = db.prepare('SELECT id FROM assessments ORDER BY created_at LIMIT 1').get();
+  if (defaultId) {
+    db.prepare('UPDATE assessment_links SET assessment_id = ? WHERE assessment_id IS NULL').run(defaultId.id);
+    db.prepare('UPDATE assessment_sessions SET assessment_id = ? WHERE assessment_id IS NULL').run(defaultId.id);
+    // Historical sessions get the threshold they were actually judged under —
+    // the only value available is the current one, which is what they were
+    // being judged against a moment ago anyway. From now on it is pinned.
+    const cfg = db.prepare('SELECT * FROM settings WHERE id = 1').get() || {};
+    db.prepare('UPDATE assessment_sessions SET pass_threshold = ? WHERE pass_threshold IS NULL')
+      .run(cfg.pass_threshold != null ? cfg.pass_threshold : 70);
+    db.prepare('UPDATE assessment_sessions SET total_max = 100 WHERE total_max IS NULL').run();
+  }
+});
+migrateAssessments();
 
 module.exports = db;

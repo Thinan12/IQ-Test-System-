@@ -61,14 +61,20 @@ SCORE_AFTER=$(dbq "SELECT calc_marks AS v FROM scores ORDER BY computed_at DESC 
 check "score was computed server-side, not taken from the candidate payload (got '$SCORE_AFTER', not 30)" "$([ "$SCORE_AFTER" != "30" ] && echo 0 || echo 1)"
 
 c_head "6. Expired token rejected"
-http_body PUT "$BASE/api/admin/settings" "$SUPER" '{"linkExpiryMinutes":0}' > /dev/null
+# The assessment owns the invitation window, so the link is issued with a
+# 1-minute expiry and then pushed into the past directly — the invitation
+# window is validated on every request, not only at issue time.
+EXP_ASMT=$(dbq 'SELECT id AS v FROM assessments ORDER BY created_at LIMIT 1')
+http_body PATCH "$BASE/api/admin/assessments/$EXP_ASMT" "$SUPER" '{"link_expiry_minutes":1}' > /dev/null
 EXP_CAND=$(http_body POST "$BASE/api/admin/candidates" "$HR" '{"fullName":"Expiry Test","applicationType":"NORMAL","iq":110,"education":"Bachelor Degree"}')
 EXP_ID=$(jsonval "$EXP_CAND" 'd.id')
-EXP_TOKEN=$(jsonval "$(http_body POST "$BASE/api/admin/candidates/$EXP_ID/links" "$HR")" 'd.token')
-sleep 1.2
+EXP_LINK=$(http_body POST "$BASE/api/admin/candidates/$EXP_ID/links" "$HR")
+EXP_TOKEN=$(jsonval "$EXP_LINK" 'd.token')
+expect_eq "the link took the assessment's 1-minute invitation window" 1   "$(dbq "SELECT CAST((julianday(expires_at) - julianday(created_at)) * 24 * 60 + 0.5 AS INTEGER) AS v FROM assessment_links WHERE id = '$(jsonval "$EXP_LINK" 'd.id')'")"
+dbx "UPDATE assessment_links SET expires_at = datetime('now','-1 minute') WHERE id = '$(jsonval "$EXP_LINK" 'd.id')'"
 expect_eq "expired invitation link rejected (410)" 410 "$(http_code GET "$BASE/api/exam/$EXP_TOKEN")"
 expect_eq "expired link cannot start an assessment (410)" 410 "$(http_code POST "$BASE/api/exam/$EXP_TOKEN/start" '' '{"candidateCode":"x"}')"
-http_body PUT "$BASE/api/admin/settings" "$SUPER" '{"linkExpiryMinutes":10}' > /dev/null
+http_body PATCH "$BASE/api/admin/assessments/$EXP_ASMT" "$SUPER" '{"link_expiry_minutes":10}' > /dev/null
 
 c_head "7. Revoked token rejected"
 REV_CAND=$(http_body POST "$BASE/api/admin/candidates" "$HR" '{"fullName":"Revoke Test","applicationType":"NORMAL","iq":110,"education":"Bachelor Degree"}')

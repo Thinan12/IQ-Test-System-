@@ -94,7 +94,8 @@ const NAV = [
   { key: 'candidates', label: 'Candidates', roles: null },
   { key: 'live', label: 'Live Assessments', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
   { key: 'links', label: 'Assessment Links', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'] },
-  { key: 'questions', label: 'Question Bank', roles: ['SUPER_ADMIN', 'HR_ADMIN'] },
+  { key: 'assessments', label: 'Assessments', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER', 'EVALUATOR', 'RECRUITER', 'INTERVIEWER'] },
+  { key: 'questions', label: 'Question Bank', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'EVALUATOR', 'MANAGER'] },
   { key: 'interviews', label: 'Interviews', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'INTERVIEWER', 'MANAGER'] },
   { key: 'analytics', label: 'Analytics', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
   { key: 'scholarship', label: 'Scholarship Policy', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
@@ -159,7 +160,7 @@ function renderShell(parts) {
   $$('.sidebar-nav a').forEach((a) => (a.onclick = () => goto(a.dataset.nav)));
   $('#logoutBtn').onclick = logout;
   if (item && !navAllowed(item)) { $('#content').innerHTML = `<div class="empty"><h3>Not authorized</h3><p>Your role does not have access to this section.</p></div>`; return; }
-  const views = { dashboard: viewDashboard, candidates: viewCandidates, live: viewLive, links: viewLinks, questions: viewQuestions, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, users: viewUsers, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
+  const views = { dashboard: viewDashboard, candidates: viewCandidates, live: viewLive, links: viewLinks, assessments: viewAssessments, questions: viewQuestions, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, users: viewUsers, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
   // A view that throws must show a real error with a way out, never a page
   // stuck on "Loading…" (sections 26/29/30).
   Promise.resolve()
@@ -253,6 +254,10 @@ function decorateBusyButtons() {
       btn.textContent = btn.dataset.busy || 'Working…';
       try {
         await original.call(btn, event);
+      } catch (e) {
+        // api() has already shown the user what went wrong. Swallowing it here
+        // keeps a refused action from surfacing as an unhandled rejection and
+        // leaves the button — and any modal it opened — usable for a retry.
       } finally {
         // If the action re-rendered the view the button is gone; leave it be.
         if (btn.isConnected) { btn.disabled = false; btn.textContent = label; }
@@ -536,6 +541,218 @@ async function viewLinks(_, el) {
   $$('button[data-id]', el).forEach((b) => (b.onclick = () => goto('candidates/' + b.dataset.id)));
 }
 
+// ---------------- Assessments ----------------
+async function viewAssessments(_, el) {
+  let showArchived = false;
+  let search = '';
+
+  async function load() {
+    const params = [];
+    if (showArchived) params.push('archived=1');
+    if (search) params.push('q=' + encodeURIComponent(search));
+    const { assessments, canEdit } = await api('/assessments' + (params.length ? '?' + params.join('&') : ''));
+
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="field" style="flex:1;min-width:200px;margin:0;"><label class="field-label">Search</label>
+          <input id="aSearch" placeholder="Name or description" value="${esc(search)}"></div>
+        <div class="field" style="margin:0;"><label class="field-label">Show</label>
+          <select id="aArchived">
+            <option value="">Current</option>
+            <option value="1" ${showArchived ? 'selected' : ''}>Archived</option>
+          </select></div>
+        ${canEdit ? '<button class="btn btn-primary" id="newAsmtBtn">+ New Assessment</button>' : ''}
+      </div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>Name</th><th>Status</th><th>Questions</th><th>Duration</th><th>Invite expiry</th>
+        <th>Scoring</th><th>Pass</th><th>Sat</th><th>Actions</th></tr></thead>
+      <tbody>${assessments.map((a) => assessmentRowHTML(a, canEdit)).join('') || `<tr><td colspan="9" class="faint" style="text-align:center;padding:22px;">No ${showArchived ? 'archived ' : ''}assessments.</td></tr>`}</tbody></table></div>
+      <p class="faint" style="margin-top:10px;">Changing an assessment affects invitations issued and exams started from that point on. Links already issued keep their own expiry, running exams keep their own deadline, and completed results keep the pass threshold they were judged under.</p>`;
+
+    $('#aSearch').addEventListener('input', debounce((e) => { search = e.target.value.trim(); load(); }, 300));
+    $('#aArchived').onchange = (e) => { showArchived = e.target.value === '1'; load(); };
+    if ($('#newAsmtBtn')) $('#newAsmtBtn').onclick = () => openAssessmentModal(null, load);
+    wireAssessmentActions(assessments, load);
+  }
+
+  el.innerHTML = 'Loading…';
+  await load();
+}
+
+function assessmentRowHTML(a, canEdit) {
+  const status = a.archived
+    ? '<span class="badge badge-neutral">ARCHIVED</span>'
+    : a.active ? '<span class="badge badge-success">ACTIVE</span>' : '<span class="badge badge-warning">INACTIVE</span>';
+  const mismatch = a.questionMarks !== (a.calc_max + a.written_max);
+  return `<tr>
+    <td><b>${esc(a.name)}</b>${a.description ? `<br><span class="faint">${esc(a.description.slice(0, 70))}${a.description.length > 70 ? '…' : ''}</span>` : ''}</td>
+    <td>${status}</td>
+    <td class="mono">${a.questionCount}<br><span class="faint" style="font-size:11px;">${a.questionMarks} marks${mismatch ? ' ⚠' : ''}</span></td>
+    <td class="mono">${a.duration_minutes} min</td>
+    <td class="mono">${a.link_expiry_minutes} min</td>
+    <td class="mono" style="font-size:11.5px;">${a.calc_max}/${a.written_max}/${a.interview_max}<br><span class="faint">= ${a.total_max}</span></td>
+    <td class="mono"><b>${a.pass_threshold}</b></td>
+    <td class="mono faint">${a.sessionCount}</td>
+    <td style="white-space:nowrap;">
+      <button class="btn btn-sm" data-aact="view" data-aid="${a.id}">View</button>
+      ${canEdit ? `
+        ${a.archived ? '' : `<button class="btn btn-sm" data-aact="edit" data-aid="${a.id}">Edit</button>`}
+        ${a.archived ? '' : `<button class="btn btn-sm" data-aact="duplicate" data-aid="${a.id}" data-busy="Duplicating…">Duplicate</button>`}
+        ${!a.archived && !a.active ? `<button class="btn btn-sm" data-aact="activate" data-aid="${a.id}" data-busy="Activating…">Activate</button>` : ''}
+        ${!a.archived && a.active ? `<button class="btn btn-sm" data-aact="deactivate" data-aid="${a.id}" data-busy="Deactivating…">Deactivate</button>` : ''}
+        ${a.archived
+          ? `<button class="btn btn-sm" data-aact="restore" data-aid="${a.id}" data-busy="Restoring…">Restore</button>`
+          : `<button class="btn btn-danger btn-sm" data-aact="archive" data-aid="${a.id}" data-busy="Archiving…">Archive</button>`}
+      ` : ''}
+    </td></tr>`;
+}
+
+function wireAssessmentActions(assessments, reload) {
+  $$('[data-aact]').forEach((btn) => {
+    btn.onclick = async () => {
+      const a = assessments.find((x) => x.id === btn.dataset.aid);
+      const act = btn.dataset.aact;
+      // View and Edit carry no data-busy label, so they are not wrapped by
+      // decorateBusyButtons — they catch their own failures.
+      if (act === 'view') return openAssessmentModal(a, reload, true).catch(() => {});
+      if (act === 'edit') return openAssessmentModal(a, reload).catch(() => {});
+      if (act === 'duplicate') {
+        const name = prompt('Name for the copy:', a.name + ' (copy)');
+        if (name === null) return;
+        const r = await api('/assessments/' + a.id + '/duplicate', { method: 'POST', body: JSON.stringify({ name: name.trim() }) });
+        toast(`Duplicated as "${r.assessment.name}". It starts inactive so it can be reviewed first.`);
+        return reload();
+      }
+      if (act === 'activate' || act === 'deactivate') {
+        const on = act === 'activate';
+        if (!on && !confirm('Deactivate this assessment? No new invitations can be issued for it. Exams already running are unaffected.')) return;
+        await api('/assessments/' + a.id + '/active', { method: 'POST', body: JSON.stringify({ active: on }) });
+        toast(on ? 'Assessment activated.' : 'Assessment deactivated.');
+        return reload();
+      }
+      if (act === 'archive') {
+        if (!confirm('Archive this assessment? It can no longer receive invitations. Completed results are kept exactly as they are, and you can restore it later.')) return;
+        const r = await api('/assessments/' + a.id + '/archive', { method: 'POST' });
+        toast(`Archived.${r.historicalSessions ? ` ${r.historicalSessions} completed assessment(s) kept.` : ''}`);
+        return reload();
+      }
+      if (act === 'restore') {
+        await api('/assessments/' + a.id + '/restore', { method: 'POST' });
+        toast('Restored. It stays inactive until you activate it.');
+        return reload();
+      }
+    };
+  });
+}
+
+// Editor: General / Timing / Scoring / Eligibility / Questions.
+async function openAssessmentModal(assessment, onDone, readOnly) {
+  const editing = !!assessment;
+  const { questions: bank } = await api('/questions');
+  const selected = editing ? assessment.questions.map((q) => q.id) : [];
+
+  const a = editing ? assessment : {
+    name: '', description: '', duration_minutes: 45, link_expiry_minutes: 10,
+    calc_max: 30, written_max: 30, interview_max: 40, total_max: 100,
+    pass_threshold: 70, eligibility_rules_id: 1,
+  };
+
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(10,18,26,.5);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:4vh 16px;overflow:auto;';
+  const ro = readOnly ? 'disabled' : '';
+  bg.innerHTML = `<div class="card" style="max-width:860px;width:100%;">
+    <div class="section-title">${readOnly ? 'Assessment' : editing ? 'Edit assessment' : 'New assessment'}${editing ? ' — ' + esc(a.name) : ''}</div>
+
+    <div class="field-label" style="margin-top:4px;">General</div>
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Name *</label><input id="aName" ${ro} value="${esc(a.name)}"></div>
+      <div class="field"><label class="field-label">Description</label><input id="aDesc" ${ro} value="${esc(a.description || '')}"></div>
+    </div>
+
+    <div class="field-label">Timing — the invitation window and the exam clock are independent</div>
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Exam duration (minutes)</label><input type="number" id="aDuration" ${ro} min="1" max="600" value="${a.duration_minutes}">
+        <span class="faint">How long the candidate has once they start.</span></div>
+      <div class="field"><label class="field-label">Invitation expiry (minutes)</label><input type="number" id="aExpiry" ${ro} min="1" max="1440" value="${a.link_expiry_minutes}">
+        <span class="faint">How long they have to open the link. Links already issued keep their own expiry.</span></div>
+    </div>
+
+    <div class="field-label">Scoring</div>
+    <div class="grid grid-3" style="gap:12px;">
+      <div class="field"><label class="field-label">Calculation marks</label><input type="number" id="aCalc" ${ro} value="${a.calc_max}"></div>
+      <div class="field"><label class="field-label">Written marks</label><input type="number" id="aWritten" ${ro} value="${a.written_max}"></div>
+      <div class="field"><label class="field-label">Interview marks</label><input type="number" id="aInterview" ${ro} value="${a.interview_max}"></div>
+      <div class="field"><label class="field-label">Total marks</label><input type="number" id="aTotal" ${ro} value="${a.total_max}"></div>
+      <div class="field"><label class="field-label">Pass threshold</label><input type="number" id="aThreshold" ${ro} value="${a.pass_threshold}"></div>
+      <div class="field"><label class="field-label">Eligibility policy</label>
+        <select id="aEligibility" ${ro}><option value="1" selected>Standard LALCO eligibility rules</option></select>
+        <span class="faint">Configured under Admin Settings.</span></div>
+    </div>
+    <p class="faint">Calculation + written + interview must equal the total. Completed assessments keep the threshold they were judged under.</p>
+
+    <div class="field-label">Questions — drawn from the Question Bank by reference, never copied</div>
+    <div class="table-wrap" style="max-height:260px;overflow:auto;"><table><thead><tr><th style="width:40px;">Use</th><th>Question</th><th>Type</th><th>Marks</th><th>Lao</th><th style="width:90px;">Order</th></tr></thead>
+    <tbody id="aQuestions">${bank.map((q) => {
+      const idx = selected.indexOf(q.id);
+      return `<tr>
+        <td><input type="checkbox" class="aq-use" data-qid="${q.id}" ${idx >= 0 ? 'checked' : ''} ${ro} style="width:16px;height:16px;"></td>
+        <td style="font-size:12.5px;">${esc(String(q.text).slice(0, 90))}${String(q.text).length > 90 ? '…' : ''}</td>
+        <td><span class="badge badge-neutral">${q.type}</span></td>
+        <td class="mono">${q.max_marks}</td>
+        <td>${q.translationStatus === 'APPROVED' ? '<span class="badge badge-success">LO</span>' : '<span class="faint">—</span>'}</td>
+        <td><input type="number" class="aq-order" data-qid="${q.id}" ${ro} value="${idx >= 0 ? idx : ''}" style="width:70px;" placeholder="—"></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>
+    <p class="faint">Order decides the sequence the candidate sees. Leave blank for questions this assessment does not use.</p>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" id="aCancel">${readOnly ? 'Close' : 'Cancel'}</button>
+      ${readOnly ? '' : `<button class="btn btn-primary" id="aSave" data-busy="Saving…">${editing ? 'Save changes' : 'Create assessment'}</button>`}
+    </div>
+  </div>`;
+
+  document.body.appendChild(bg);
+  const close = makeDismissable(bg);
+  $('#aCancel', bg).onclick = close;
+  if (!readOnly) $('#aName', bg).focus();
+
+  if (!readOnly) $('#aSave', bg).onclick = async () => {
+    const chosen = $$('.aq-use', bg).filter((c) => c.checked).map((c) => c.dataset.qid);
+    // Order by the number typed beside each chosen question; anything left
+    // blank falls to the end in bank order, so a half-filled form still saves
+    // something sensible rather than failing.
+    const orderOf = (qid) => {
+      const input = $$('.aq-order', bg).find((i) => i.dataset.qid === qid);
+      const v = input && input.value !== '' ? Number(input.value) : Number.POSITIVE_INFINITY;
+      return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+    };
+    const questionIds = chosen.slice().sort((x, y) => orderOf(x) - orderOf(y));
+
+    const payload = {
+      name: $('#aName', bg).value.trim(),
+      description: $('#aDesc', bg).value.trim() || null,
+      duration_minutes: Number($('#aDuration', bg).value),
+      link_expiry_minutes: Number($('#aExpiry', bg).value),
+      calc_max: Number($('#aCalc', bg).value),
+      written_max: Number($('#aWritten', bg).value),
+      interview_max: Number($('#aInterview', bg).value),
+      total_max: Number($('#aTotal', bg).value),
+      pass_threshold: Number($('#aThreshold', bg).value),
+      eligibility_rules_id: Number($('#aEligibility', bg).value),
+      questionIds,
+    };
+    if (!payload.name) return toast('An assessment name is required.', true);
+
+    // The server validates all of this again and is the authority.
+    const r = editing
+      ? await api('/assessments/' + assessment.id, { method: 'PATCH', body: JSON.stringify(payload) })
+      : await api('/assessments', { method: 'POST', body: JSON.stringify(payload) });
+    toast(`Assessment ${editing ? 'updated' : 'created'} — ${r.assessment.questionCount} question(s), pass ${r.assessment.pass_threshold}/${r.assessment.total_max}.`);
+    close();
+    onDone && onDone();
+  };
+}
+
 // ---------------- Question bank ----------------
 const TRANSLATION_TONE = { MISSING: 'danger', DRAFT: 'warning', APPROVED: 'success' };
 
@@ -611,6 +828,11 @@ function questionCardHTML(q) {
         ${q.active ? '' : '<span class="badge badge-warning">INACTIVE</span>'}</span>
       <span>Lao: ${translationBadge(q.translationStatus)}</span>
     </div>
+    <div class="faint" style="font-size:12px;margin:-4px 0 8px;">${
+      q.usedByAssessments && q.usedByAssessments.length
+        ? 'Used by: ' + q.usedByAssessments.map((n) => esc(n)).join(', ')
+        : '<span class="badge badge-warning">NOT IN ANY ASSESSMENT</span> No candidate will see this question until an assessment includes it.'
+    }</div>
     <div class="grid grid-2" style="gap:10px;">
       <div><div class="field-label">English question</div><p style="font-size:13px;">${esc(q.text)}</p></div>
       <div><div class="field-label">Lao question</div>${q.text_lo
@@ -825,16 +1047,17 @@ async function viewSettings(_, el) {
       <div class="field"><label class="field-label">GPA must be more than</label><input type="number" step="0.1" id="sGpa" value="${eligibilityRules.scholarship_gpa_min}"></div>
       <button class="btn btn-primary btn-sm" id="saveElig" data-busy="Saving…">Save eligibility rules</button>
     </div>
-    <div class="card"><div class="section-title">Assessment settings</div>
-      <div class="field"><label class="field-label">Pass threshold (/100)</label><input type="number" id="passT" value="${settings.pass_threshold}"></div>
-      <div class="field"><label class="field-label">Invitation link expiry (minutes)</label>
+    <div class="card"><div class="section-title">Defaults for new assessments</div>
+      <p class="faint" style="margin-top:0;">Each assessment carries its own duration, invitation expiry and pass threshold — set them under <a href="#/assessments">Assessments</a>. The values here are what a newly created assessment starts with; changing them does not alter an existing assessment, a link already issued, or a result already decided.</p>
+      <div class="field"><label class="field-label">Default pass threshold (/100)</label><input type="number" id="passT" value="${settings.pass_threshold}"></div>
+      <div class="field"><label class="field-label">Default invitation link expiry (minutes)</label>
         <select id="linkExpPreset">
           ${[5, 10, 15, 20, 30, 60].map((m) => `<option value="${m}" ${settings.link_expiry_minutes === m ? 'selected' : ''}>${m} minutes</option>`).join('')}
           <option value="custom" ${[5, 10, 15, 20, 30, 60].includes(settings.link_expiry_minutes) ? '' : 'selected'}>Custom…</option>
         </select>
         <input type="number" id="linkExp" min="1" max="1440" value="${settings.link_expiry_minutes}" style="margin-top:6px; ${[5, 10, 15, 20, 30, 60].includes(settings.link_expiry_minutes) ? 'display:none;' : ''}">
         <span class="faint">Already-issued links keep the expiry they were created with.</span></div>
-      <div class="field"><label class="field-label">Assessment duration (minutes) — separate timer from the invitation link</label><input type="number" id="duration" value="${settings.assessment_duration_minutes}"></div>
+      <div class="field"><label class="field-label">Default assessment duration (minutes) — separate timer from the invitation link</label><input type="number" id="duration" value="${settings.assessment_duration_minutes}"></div>
       <div class="field"><label class="field-label">Maximum LTV (%)</label><input type="number" id="maxLtv" value="${settings.max_ltv}"></div>
       <b class="faint">Candidate identity verification (before starting)</b>
       <label style="display:flex;gap:8px;align-items:center;margin:6px 0;"><input type="checkbox" id="reqId" ${settings.require_candidate_id ? 'checked' : ''} style="width:16px;height:16px;"> Require Candidate ID</label>

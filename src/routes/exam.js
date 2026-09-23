@@ -104,14 +104,26 @@ router.get('/:token', (req, res) => {
 function respondWithCandidateContext(req, res, link, session) {
   const c = db.prepare('SELECT * FROM candidates WHERE id = ?').get(link.candidate_id);
   const s = settings();
+  // What the candidate is told must describe the assessment this invitation is
+  // for. Reporting the global default here told people the wrong duration and
+  // the wrong number of questions as soon as assessments could differ.
+  const assessment = link.assessment_id
+    ? db.prepare('SELECT * FROM assessments WHERE id = ?').get(link.assessment_id)
+    : db.prepare(`SELECT * FROM assessments WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY created_at LIMIT 1`).get();
+  const attachedCount = assessment
+    ? db.prepare(
+        `SELECT COUNT(*) AS n FROM assessment_questions aq JOIN questions q ON q.id = aq.question_id
+          WHERE aq.assessment_id = ? AND q.active = 1 AND COALESCE(q.archived,0) = 0`
+      ).get(assessment.id).n
+    : 0;
   const calcCount = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE type='CALC' AND active=1`).get().n;
   const essayCount = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE type='ESSAY' AND active=1`).get().n;
   res.json({
     candidateName: c.full_name,
     position: lookupName('positions', c.applied_position_id) || c.applied_position_id,
-    assessmentName: 'LALCO Recruitment Assessment',
-    questionCount: calcCount + essayCount,
-    durationMinutes: s.assessment_duration_minutes,
+    assessmentName: assessment ? assessment.name : 'LALCO Recruitment Assessment',
+    questionCount: attachedCount || calcCount + essayCount,
+    durationMinutes: assessment ? assessment.duration_minutes : s.assessment_duration_minutes,
     verification: { requireCandidateId: !!s.require_candidate_id, requirePhone: !!s.require_phone, requireDob: !!s.require_dob },
     session: session ? {
       // `status` is what the candidate's portal keys off: SUBMITTED for a manual
@@ -160,6 +172,15 @@ router.post('/:token/start', (req, res) => {
   if (status !== 'ACTIVE') return res.status(410).json({ error: 'This assessment invitation has expired.' });
 
   const s = settings();
+  // The assessment this invitation was issued for governs the duration and the
+  // scoring this attempt is judged under.
+  const assessment = link.assessment_id
+    ? db.prepare('SELECT * FROM assessments WHERE id = ?').get(link.assessment_id)
+    : db.prepare(`SELECT * FROM assessments WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY created_at LIMIT 1`).get();
+  if (assessment && assessment.archived) {
+    return res.status(410).json({ error: 'This assessment is no longer available. Please contact the recruitment team.' });
+  }
+  const durationMinutes = assessment ? assessment.duration_minutes : s.assessment_duration_minutes;
   const b = req.body || {};
   if (s.require_candidate_id && String(b.candidateCode || '').trim().toUpperCase() !== c.code.toUpperCase()) {
     return res.status(401).json({ error: 'Candidate ID does not match our records.' });
@@ -173,13 +194,20 @@ router.post('/:token/start', (req, res) => {
 
   const id = generateId('sess');
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + s.assessment_duration_minutes * 60000).toISOString();
+  const expiresAt = new Date(now.getTime() + durationMinutes * 60000).toISOString();
   // The language chosen on the instructions screen carries into the session.
   const startLanguage = normaliseLanguage(b.language);
   db.prepare(
-    `INSERT INTO assessment_sessions (id, candidate_id, link_id, started_at, duration_minutes, expires_at, status, verified, language)
-     VALUES (?,?,?,?,?,?,'IN_PROGRESS',1,?)`
-  ).run(id, c.id, link.id, now.toISOString(), s.assessment_duration_minutes, expiresAt, startLanguage);
+    `INSERT INTO assessment_sessions (id, candidate_id, link_id, assessment_id, started_at, duration_minutes,
+       expires_at, status, verified, language, pass_threshold, total_max)
+     VALUES (?,?,?,?,?,?,?,'IN_PROGRESS',1,?,?,?)`
+  ).run(
+    id, c.id, link.id, assessment ? assessment.id : null, now.toISOString(), durationMinutes,
+    expiresAt, startLanguage,
+    // Snapshot: this attempt is judged by these numbers for ever.
+    assessment ? assessment.pass_threshold : s.pass_threshold,
+    assessment ? assessment.total_max : 100
+  );
   db.prepare(`UPDATE assessment_links SET status='USED' WHERE id=?`).run(link.id);
   db.prepare(`UPDATE candidates SET status='ASSESSMENT_STARTED' WHERE id=?`).run(c.id);
   audit({ userName: 'Candidate (public exam)', role: 'CANDIDATE', action: 'Assessment started', target: c.code, ip: req.ip });
@@ -237,9 +265,23 @@ function requireActiveSession(req, res, next) {
 
 // ---- Get question list (sanitized) + current answers for review/navigation ----
 router.get('/:token/questions', requireActiveSession, (req, res) => {
+  // The questions this assessment actually asks, in the order it asks them.
+  // Falls back to "every active question" for a session with no assessment
+  // (a database predating assessment management).
+  const assessmentId = req.session_.assessment_id;
+  const attached = assessmentId
+    ? db.prepare(
+        `SELECT q.* FROM assessment_questions aq
+           JOIN questions q ON q.id = aq.question_id
+          WHERE aq.assessment_id = ? AND q.active = 1 AND COALESCE(q.archived,0) = 0
+          ORDER BY aq.order_index`
+      ).all(assessmentId)
+    : [];
   // An archived question is withdrawn from new assessments but never deleted,
   // so completed assessments keep referencing it.
-  const questions = db.prepare(`SELECT * FROM questions WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`).all();
+  const questions = attached.length
+    ? attached
+    : db.prepare(`SELECT * FROM questions WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`).all();
   const answers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(req.session_.id);
   const lang = req.session_.language || DEFAULT_LANGUAGE;
   res.json({

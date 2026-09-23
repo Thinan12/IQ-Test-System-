@@ -148,10 +148,54 @@ CREATE TABLE IF NOT EXISTS interview_criteria (
   order_index INTEGER NOT NULL DEFAULT 0
 );
 
+-- An assessment is a named, versionable configuration: which questions are
+-- asked, for how long, how they are scored and what counts as a pass. Before
+-- this table the configuration lived in the `settings` singleton, so there
+-- could only ever be one and changing it rewrote history.
+CREATE TABLE IF NOT EXISTS assessments (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  archived INTEGER NOT NULL DEFAULT 0,
+  archived_at TEXT,
+  archived_by TEXT,
+  -- Timing. These two are deliberately independent: the invitation window is
+  -- how long the candidate has to OPEN the link; the duration is how long they
+  -- have once they START.
+  duration_minutes INTEGER NOT NULL DEFAULT 45,
+  link_expiry_minutes INTEGER NOT NULL DEFAULT 10,
+  -- Scoring. Kept configurable but defaulting to the established 30/30/40/100.
+  calc_max INTEGER NOT NULL DEFAULT 30,
+  written_max INTEGER NOT NULL DEFAULT 30,
+  interview_max INTEGER NOT NULL DEFAULT 40,
+  total_max INTEGER NOT NULL DEFAULT 100,
+  pass_threshold INTEGER NOT NULL DEFAULT 70,
+  -- Eligibility policy this assessment is judged against. Today there is one
+  -- singleton row; the column exists so more can be added without migration.
+  eligibility_rules_id INTEGER NOT NULL DEFAULT 1 REFERENCES eligibility_rules(id),
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Which questions an assessment asks, and in what order. Questions are
+-- REFERENCED, never copied: the bilingual question bank stays authoritative
+-- and a question edited there is edited once.
+CREATE TABLE IF NOT EXISTS assessment_questions (
+  assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+  question_id TEXT NOT NULL REFERENCES questions(id),
+  order_index INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (assessment_id, question_id)
+);
+CREATE INDEX IF NOT EXISTS idx_aq_assessment ON assessment_questions(assessment_id, order_index);
+
 CREATE TABLE IF NOT EXISTS assessment_links (
   id TEXT PRIMARY KEY,
   token TEXT NOT NULL UNIQUE,
   candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  -- Which assessment this invitation is for.
+  assessment_id TEXT REFERENCES assessments(id),
   status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE','USED','EXPIRED','REVOKED')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL,
@@ -181,8 +225,14 @@ CREATE TABLE IF NOT EXISTS assessment_sessions (
   id TEXT PRIMARY KEY,
   candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
   link_id TEXT REFERENCES assessment_links(id),
+  assessment_id TEXT REFERENCES assessments(id),
   started_at TEXT,
   duration_minutes INTEGER NOT NULL,
+  -- Scoring configuration SNAPSHOT, taken when the assessment starts. Pass/fail
+  -- is judged against these, not against whatever the configuration says later,
+  -- so editing an assessment can never re-judge someone who already sat it.
+  pass_threshold INTEGER,
+  total_max INTEGER,
   expires_at TEXT,
   submitted_at TEXT,
   status TEXT NOT NULL DEFAULT 'NOT_STARTED' CHECK(status IN ('NOT_STARTED','IN_PROGRESS','SUBMITTED')),

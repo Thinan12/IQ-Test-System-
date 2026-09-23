@@ -114,6 +114,13 @@ function adminQuestion(q) {
     configLo: q.config_lo_json ? JSON.parse(q.config_lo_json) : null,
     archived: !!q.archived,
     translationStatus: q.translation_status || 'MISSING',
+    // Which assessments actually ask this question. A question nobody has
+    // added to an assessment is never served to a candidate, so this is the
+    // difference between written and in use.
+    usedByAssessments: db.prepare(
+      `SELECT a.name FROM assessment_questions aq JOIN assessments a ON a.id = aq.assessment_id
+        WHERE aq.question_id = ? AND COALESCE(a.archived,0) = 0 ORDER BY a.name`
+    ).all(q.id).map((r) => r.name),
   };
 }
 

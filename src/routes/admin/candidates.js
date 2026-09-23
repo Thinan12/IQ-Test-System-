@@ -282,14 +282,28 @@ router.post('/:id/links', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (
   const c = db.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Candidate not found.' });
   const s = settings();
+  // Which assessment is this invitation for? An explicit choice wins; otherwise
+  // the active, non-archived one. An archived or inactive assessment can never
+  // receive a new invitation.
+  const requested = (req.body || {}).assessmentId;
+  const assessment = requested
+    ? db.prepare('SELECT * FROM assessments WHERE id = ?').get(requested)
+    : db.prepare(`SELECT * FROM assessments WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY created_at LIMIT 1`).get();
+  if (requested && !assessment) return res.status(404).json({ error: 'That assessment does not exist.' });
+  if (assessment && assessment.archived) return res.status(409).json({ error: 'That assessment is archived and cannot receive new invitations.' });
+  if (assessment && !assessment.active) return res.status(409).json({ error: 'That assessment is inactive and cannot receive new invitations.' });
+
   // Revoke any currently active links for this candidate; history is preserved, never deleted.
   db.prepare(`UPDATE assessment_links SET status = 'REVOKED', revoked_at = datetime('now') WHERE candidate_id = ? AND status = 'ACTIVE'`).run(c.id);
   const id = generateId('link');
   const token = generateSecureToken();
-  const expiresAt = new Date(Date.now() + s.link_expiry_minutes * 60000).toISOString();
+  // The assessment's own invitation window, falling back to the global setting
+  // for a database that has no assessment yet.
+  const expiryMinutes = assessment ? assessment.link_expiry_minutes : s.link_expiry_minutes;
+  const expiresAt = new Date(Date.now() + expiryMinutes * 60000).toISOString();
   db.prepare(
-    `INSERT INTO assessment_links (id, token, candidate_id, status, expires_at, created_by) VALUES (?, ?, ?, 'ACTIVE', ?, ?)`
-  ).run(id, token, c.id, expiresAt, req.user.name);
+    `INSERT INTO assessment_links (id, token, candidate_id, assessment_id, status, expires_at, created_by) VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)`
+  ).run(id, token, c.id, assessment ? assessment.id : null, expiresAt, req.user.name);
   if (c.status === 'DRAFT') db.prepare(`UPDATE candidates SET status = 'INVITED' WHERE id = ?`).run(c.id);
   auditFromReq(req, 'Assessment link generated', c.code, null, { token: token.slice(0, 8) + '…', expiresAt });
   const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
@@ -387,13 +401,21 @@ function upsertScoreField(sessionId, fields) {
 function recomputeFinal(sessionId) {
   const s = db.prepare('SELECT * FROM scores WHERE session_id = ?').get(sessionId);
   if (!s) return;
-  const set = settings();
+  const session = db.prepare('SELECT * FROM assessment_sessions WHERE id = ?').get(sessionId);
+  // Judged against the threshold captured when this assessment was SAT, not
+  // whatever the configuration says today. Re-marking an essay later must not
+  // re-decide pass/fail under rules the candidate never sat under. Legacy rows
+  // with no snapshot fall back to the global setting.
+  const threshold = session && session.pass_threshold != null
+    ? session.pass_threshold
+    : settings().pass_threshold;
+  const totalMax = session && session.total_max != null ? session.total_max : 100;
   const calc = s.calc_marks || 0;
   const essay = s.essay_marks == null ? 0 : s.essay_marks;
   const interview = s.interview_marks == null ? 0 : s.interview_marks;
   const final = calc + essay + interview;
-  const percentage = final; // already out of 100 (30+30+40)
-  const pass = final >= set.pass_threshold ? 1 : 0;
+  const percentage = totalMax ? Math.round((final / totalMax) * 100) : final;
+  const pass = final >= threshold ? 1 : 0;
   db.prepare('UPDATE scores SET final_marks = ?, percentage = ?, pass = ? WHERE session_id = ?').run(final, percentage, pass, sessionId);
   if (s.essay_marks != null && s.interview_marks != null) {
     const session = db.prepare('SELECT * FROM assessment_sessions WHERE id = ?').get(sessionId);
