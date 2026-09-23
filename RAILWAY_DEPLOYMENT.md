@@ -52,7 +52,7 @@ Optional:
 | `AUTO_SUBMIT_SWEEP_SECONDS` | `60` | How often abandoned expired assessments are finalized. Minimum 5. |
 | `EXAM_RATE_LIMIT_PER_MINUTE` | `300` | Raise for a large sitting behind one office IP. |
 | `LOGIN_RATE_LIMIT_PER_15_MIN` | `20` | Admin login attempts per IP. |
-| `DEMO_PASSWORD` | `ChangeMe123!` | Password given to seeded admin accounts. **Set this before seeding, and rotate every account afterwards** — the default is published in this repository and is rejected by the password policy for any new password. |
+| `DEMO_PASSWORD` | *(none — required)* | Password given to the seeded admin accounts. **There is no default**: the seed aborts if it is unset, and rejects weak or publicly known values against the same policy as an admin password reset. Rotate every account through Admin → Users after seeding. |
 | `JWT_SECRET_PREVIOUS` | *(unset)* | Only during a secret rotation — see section 2b. |
 
 Google Sheets (only if you use it — otherwise leave all three unset and the app

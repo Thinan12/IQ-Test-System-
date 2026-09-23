@@ -13,7 +13,7 @@ native_path() { if command -v cygpath > /dev/null 2>&1; then cygpath -w "$1"; el
 export DATABASE_PATH="$(native_path "$TEST_DIR")/e2e.db"
 export PORT=4116
 export JWT_SECRET="${JWT_SECRET:-e2e-secret-0123456789abcdef0123456789abcdef}"
-export DEMO_PASSWORD="${DEMO_PASSWORD:-ChangeMe123!}"
+export DEMO_PASSWORD="${DEMO_PASSWORD:-Test-Suite-Passw0rd!2026}"
 export NODE_ENV=development
 BACKEND_DIR="$(pwd)"
 NATIVE_BACKEND="$(native_path "$BACKEND_DIR")"

@@ -13,6 +13,7 @@ SUITES=(
   "test/admin_controls.sh:Candidate, link, exam-time and user controls (P1-P5, P10)"
   "test/ui_browser.sh:Real browser UI test (P13)"
   "test/hardening.sh:Production hardening (passwords, JWT rotation, custom LALCO ID)"
+  "test/seed_security.sh:Seed security (DEMO_PASSWORD policy, transactional seed)"
   "test/security_check.sh:Security verification (section 16)"
   "test/auto_submit.sh:Auto-submit on time expiry (sections 1-8)"
   "test/deployment.sh:Deployment readiness (sections 9-15)"

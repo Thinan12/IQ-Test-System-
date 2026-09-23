@@ -15,7 +15,7 @@ const Database = require('better-sqlite3');
 const BASE = process.env.BASE_URL;
 const DB_PATH = process.env.DATABASE_PATH;
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'superadmin@lalco.demo';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'ChangeMe123!';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Test-Suite-Passw0rd!2026';
 if (!BASE || !DB_PATH) {
   console.error('BASE_URL and DATABASE_PATH are required');
   process.exit(1);

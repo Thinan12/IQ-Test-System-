@@ -120,7 +120,8 @@ expect_eq "eligibility rules exist" 1 "$(seeded eligibility_rules)"
 expect_eq "system configuration exists" 1 "$(seeded settings)"
 expect_eq "no assessment sessions were invented" 0 "$(seeded assessment_sessions)"
 expect_eq "no scores were invented" 0 "$(seeded scores)"
-expect_contains "it reminds the operator to change passwords" 'change every password' "$SEED_OUT"
+expect_contains "it reminds the operator to reset every account" 'reset every account' "$SEED_OUT"
+expect_not_contains "and the seed never prints the password itself" "$DEMO_PASSWORD" "$SEED_OUT"
 
 c_head "Re-running the seed is safe"
 SEED_AGAIN=$(cd "$SEEDDIR" && DATABASE_PATH="$NSEED/prod.db" NODE_ENV=production JWT_SECRET="$JWT_SECRET" DEMO_PASSWORD="$DEMO_PASSWORD" "$NODE" "$NATIVE_BACKEND/src/seed.js" 2>&1)

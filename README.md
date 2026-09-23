@@ -39,7 +39,8 @@ npm start
 
 Open `http://localhost:4000/admin` and sign in with one of the seeded accounts
 (see console output from `npm run seed`, or `hradmin@lalco.demo` / the
-`DEMO_PASSWORD` from your `.env`, default `ChangeMe123!`).
+`DEMO_PASSWORD` from your `.env` — there is no default, and the seed refuses
+weak or publicly known values).
 
 **Change the demo password and rotate `JWT_SECRET` before using this for real
 candidates.** Seeded demo candidates have `is_demo = 1` and are clearly

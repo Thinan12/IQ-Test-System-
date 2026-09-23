@@ -5,6 +5,9 @@
 // Fake candidate records are NEVER created unless demo mode is asked for
 // explicitly:
 //
+//   DEMO_PASSWORD must be set to a password meeting the same policy as the
+//   Admin -> Users -> Reset Password workflow. There is no built-in default.
+//
 //   npm run seed         reference data only     <- safe for production
 //   npm run seed:demo    + ~20 demo candidates   <- local/staging exploration
 //   SEED_DEMO_CANDIDATES=true npm run seed       same as seed:demo
@@ -12,6 +15,62 @@
 // Every step is idempotent: re-running skips anything already present and never
 // touches candidates created through the real app.
 require('dotenv').config();
+const { validatePassword, MIN_LENGTH } = require('./lib/passwordPolicy');
+
+// Local-parts of the seeded addresses, used to reject a password that echoes
+// an account name.
+const SEED_EMAILS_LOCAL = ['superadmin', 'hradmin', 'recruiter', 'interviewer', 'evaluator', 'manager'];
+
+/**
+ * The password the seeded admin accounts are created with.
+ *
+ * There is deliberately NO default. A password compiled into this file would be
+ * public the moment the repository is, which is exactly how the previous
+ * default became a liability. It must be supplied through the environment and
+ * must satisfy the same policy the Admin -> Users -> Reset Password workflow
+ * enforces, so a seeded account is never weaker than one created in the app.
+ *
+ * Resolution happens BEFORE any row is written, so a rejected password aborts
+ * without touching the database.
+ */
+function resolveSeedPassword(emails) {
+  const password = process.env.DEMO_PASSWORD;
+
+  if (!password) {
+    console.error('\nSeed aborted: DEMO_PASSWORD is not set.');
+    console.error('  The seeded admin accounts need a password, and this project ships no default.');
+    console.error('  Set DEMO_PASSWORD to a value of at least ' + MIN_LENGTH + ' characters using at least');
+    console.error('  3 of lowercase / uppercase / digit / symbol, then run the seed again.');
+    console.error('  Generate one with:');
+    console.error("    node -e \"console.log(require('crypto').randomBytes(18).toString('base64url'))\"");
+    console.error('  Nothing was written to the database.\n');
+    process.exit(1);
+  }
+
+  // Validate against every seeded address so a password echoing an account name
+  // is caught, exactly as the reset workflow would catch it.
+  const problems = new Set();
+  emails.forEach((email) => {
+    const result = validatePassword(password, { email });
+    if (!result.ok) result.errors.forEach((e) => problems.add(e));
+  });
+
+  if (problems.size) {
+    console.error('\nSeed aborted: DEMO_PASSWORD does not meet the password policy.');
+    // The reasons are printed; the password itself never is.
+    problems.forEach((p) => console.error('  - ' + p));
+    console.error('  Nothing was written to the database.\n');
+    process.exit(1);
+  }
+
+  return password;
+}
+
+// Resolved and validated BEFORE the database module is loaded. Opening the
+// database creates the file and applies the schema, so validating first means a
+// rejected password leaves nothing behind at all — not even an empty database.
+const seedPassword = resolveSeedPassword(SEED_EMAILS_LOCAL);
+
 const bcrypt = require('bcryptjs');
 const db = require('./db');
 const { generateId } = require('./lib/tokens');
@@ -34,7 +93,7 @@ function mulberry32(a) {
   };
 }
 
-function seedUsers() {
+function seedUsers(password) {
   const roles = [
     ['Super Admin', 'superadmin@lalco.demo', 'SUPER_ADMIN'],
     ['HR Admin', 'hradmin@lalco.demo', 'HR_ADMIN'],
@@ -43,7 +102,6 @@ function seedUsers() {
     ['Evaluator', 'evaluator@lalco.demo', 'EVALUATOR'],
     ['Manager', 'manager@lalco.demo', 'MANAGER'],
   ];
-  const password = process.env.DEMO_PASSWORD || 'ChangeMe123!';
   const hash = bcrypt.hashSync(password, 12);
   roles.forEach(([name, email, role]) => {
     const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
@@ -51,7 +109,8 @@ function seedUsers() {
     db.prepare('INSERT INTO users (id, name, email, password_hash, role) VALUES (?,?,?,?,?)')
       .run(generateId('user'), name, email, hash, role);
   });
-  console.log(`Seeded ${roles.length} demo users. Password for all: "${password}" (set DEMO_PASSWORD env var to change).`);
+  // The password is never logged. Whoever set DEMO_PASSWORD already has it.
+  console.log(`Seeded ${roles.length} admin accounts (one per role) using the supplied DEMO_PASSWORD.`);
 }
 
 function seedQuestions() {
@@ -303,22 +362,34 @@ function seedDemoCandidates() {
 const wantsDemo = process.argv.includes('--demo')
   || String(process.env.SEED_DEMO_CANDIDATES || '').toLowerCase() === 'true';
 
-seedUsers();
-seedQuestions();
-seedInterview();
-seedScholarship();
+// One transaction for the whole seed, so a failure part-way through can never
+// leave a half-populated database (users but no question bank, say).
+const runSeed = db.transaction(() => {
+  seedUsers(seedPassword);
+  seedQuestions();
+  seedInterview();
+  seedScholarship();
+  if (wantsDemo) {
+    seedDemoCandidates();
+  } else {
+    console.log('Skipped demo candidates (reference data only). Use `npm run seed:demo` to add them.');
+  }
+});
 
-if (wantsDemo) {
-  seedDemoCandidates();
-} else {
-  console.log('Skipped demo candidates (reference data only). Use `npm run seed:demo` to add them.');
+try {
+  runSeed();
+} catch (error) {
+  console.error('\nSeed failed and was rolled back. The database is unchanged.');
+  console.error('  ' + (error && error.message ? error.message : String(error)) + '\n');
+  process.exit(1);
 }
 
 if (process.env.NODE_ENV === 'production') {
   if (wantsDemo) {
     console.warn('WARNING: demo candidates were seeded into a production database.');
   }
-  console.log('Reminder: sign in with the seeded accounts and change every password immediately.');
+  console.log('Reminder: sign in and reset every account through Admin -> Users, so the');
+  console.log('shared seed password stops being a shared password.');
 }
 
 console.log('Seed complete.');

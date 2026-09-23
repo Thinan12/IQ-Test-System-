@@ -168,7 +168,9 @@ start_server() { # start_server [port]
   export DATABASE_PATH="${DATABASE_PATH:-$(native_path "$TEST_DIR")/test.db}"
   export PORT="$port"
   export JWT_SECRET="${JWT_SECRET:-test-secret-$(date +%s)-0123456789abcdef}"
-  export DEMO_PASSWORD="${DEMO_PASSWORD:-ChangeMe123!}"
+  # A policy-compliant password: the seed now refuses weak or publicly known
+  # values, so the suites must not rely on the old published default.
+  export DEMO_PASSWORD="${DEMO_PASSWORD:-Test-Suite-Passw0rd!2026}"
   export NODE_ENV=development
   BASE="http://localhost:$port"
 
