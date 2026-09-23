@@ -24,6 +24,30 @@ body{padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inse
 .qopt{display:flex; align-items:flex-start; gap:11px; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:9px; cursor:pointer; background:var(--paper-raised);}
 .qopt input{width:20px; height:20px; margin-top:1px; flex-shrink:0;}
 .qopt.checked{border-color:var(--gold); background:var(--warning-bg);}
+/* Flag for review. Deliberately not shaped like Next/Previous and kept out of
+   the sticky nav bar, so it can never be tapped by someone reaching for the
+   button that moves on or submits. Touch target stays 44px on a phone. */
+.flagrow{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:16px 0 4px; padding-top:14px; border-top:1px solid var(--line-soft);}
+.flagbtn{min-height:44px;}
+.flagbtn .flagmark{font-size:15px; line-height:1;}
+.flagbtn.on{border-color:var(--warning); background:var(--warning-bg); color:var(--warning);}
+.flagbtn:disabled{opacity:.6; cursor:default;}
+/* Submission receipt. On screen it is a plain card; on paper everything else
+   — the header, the language switch, the buttons — drops away and only the
+   confirmation remains. Both scripts are rendered by the browser, so Lao and
+   English print with the fonts already on the machine. */
+.receipt{max-width:420px; margin:18px auto 0; border:1px solid var(--line); border-radius:8px; padding:16px; background:var(--paper-raised);}
+.receipthead{font-family:Georgia,serif; font-size:13px; padding-bottom:8px; margin-bottom:8px; border-bottom:1px solid var(--line);}
+.receiptkv{width:100%; border-collapse:collapse; font-size:12.5px;}
+.receiptkv th{text-align:left; font-weight:600; padding:4px 10px 4px 0; white-space:nowrap; vertical-align:top;}
+.receiptkv td{padding:4px 0;}
+@media print{
+  @page{margin:16mm;}
+  .ptop,.pnav,.no-print,.toast-wrap,.langswitch,.flagrow{display:none !important;}
+  .pbody{padding:0; max-width:none;}
+  body{background:#fff;}
+  .receipt{border:none; margin:0; padding:0; max-width:none;}
+}
 .pnav{position:sticky; bottom:0; background:var(--paper-raised); border-top:1px solid var(--line); padding:12px 16px; display:flex; gap:10px;}
 .pnav .btn{flex:1; justify-content:center; padding:13px; min-height:48px;}
 /* iOS Safari zooms the whole page in when a focused field's font-size is below

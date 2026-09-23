@@ -160,7 +160,7 @@ function renderShell(parts) {
   $$('.sidebar-nav a').forEach((a) => (a.onclick = () => goto(a.dataset.nav)));
   $('#logoutBtn').onclick = logout;
   if (item && !navAllowed(item)) { $('#content').innerHTML = `<div class="empty"><h3>Not authorized</h3><p>Your role does not have access to this section.</p></div>`; return; }
-  const views = { dashboard: viewDashboard, candidates: viewCandidates, live: viewLive, links: viewLinks, assessments: viewAssessments, questions: viewQuestions, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, users: viewUsers, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
+  const views = { print: viewPrintCandidate, dashboard: viewDashboard, candidates: viewCandidates, live: viewLive, links: viewLinks, assessments: viewAssessments, questions: viewQuestions, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, users: viewUsers, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
   // A view that throws must show a real error with a way out, never a page
   // stuck on "Loading…" (sections 26/29/30).
   Promise.resolve()
@@ -445,16 +445,35 @@ function linkBadge(status, expiresAt) {
 function tabQuestions(d, el, id) {
   const calc = d.answers.filter((a) => a.type === 'CALC');
   const essay = d.answers.find((a) => a.type === 'ESSAY');
-  el.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Q</th><th>Category</th><th>Max</th><th>Score</th><th>Time</th><th>Status</th><th></th></tr></thead>
+  const flags = d.answers.filter((a) => a.flagged);
+  el.innerHTML = `${flagSummaryHTML(flags, d)}
+    <div class="table-wrap"><table><thead><tr><th>Q</th><th>Category</th><th>Max</th><th>Score</th><th>Time</th><th>Flag</th><th>Status</th><th></th></tr></thead>
     <tbody>${calc.map((a, i) => {
       const b = a.breakdown; const status = !b ? 'SKIPPED' : b.marks === b.max ? 'PASS' : b.marks === 0 ? 'FAIL' : 'PARTIAL';
       const m = { PASS: 'success', PARTIAL: 'warning', FAIL: 'danger', SKIPPED: 'neutral' };
-      return `<tr><td>Q${i + 1}</td><td class="faint">${esc(a.category)}</td><td>${a.maxMarks}</td><td class="mono">${b ? b.marks : '—'}</td><td class="faint mono">${fmtSec(a.timeSpentSeconds)}</td><td><span class="badge badge-${m[status]}">${status}</span></td><td><button class="btn btn-sm" data-i="${i}">Details ▾</button></td></tr>
-      <tr class="qd" data-d="${i}" style="display:none;"><td colspan="7">${b ? questionDetail(a, b) : '<span class="faint">Not attempted.</span>'}</td></tr>`;
+      return `<tr><td>Q${i + 1}</td><td class="faint">${esc(a.category)}</td><td>${a.maxMarks}</td><td class="mono">${b ? b.marks : '—'}</td><td class="faint mono">${fmtSec(a.timeSpentSeconds)}</td><td>${flagCellHTML(a)}</td><td><span class="badge badge-${m[status]}">${status}</span></td><td><button class="btn btn-sm" data-i="${i}">Details ▾</button></td></tr>
+      <tr class="qd" data-d="${i}" style="display:none;"><td colspan="8">${b ? questionDetail(a, b) : '<span class="faint">Not attempted.</span>'}</td></tr>`;
     }).join('')}</tbody></table></div>
     ${essayCard(essay, d, id)}`;
   $$('#content button[data-i]').forEach((b) => (b.onclick = () => { const r = $(`.qd[data-d="${b.dataset.i}"]`); r.style.display = r.style.display === 'none' ? 'table-row' : 'none'; }));
   wireEssayCard(d, id, el);
+}
+// The candidate's own "flag for review" marks, shown to evaluators as context
+// for how the candidate worked. They carry no marks and never change a score.
+function flagCellHTML(a) {
+  if (!a.flagged) return '<span class="faint">—</span>';
+  return `<span class="badge badge-warning" title="Flagged ${esc(fmtDT(a.flaggedAt))}">⚑ Flagged</span>`;
+}
+function flagSummaryHTML(flags, d) {
+  if (!d.session) return '';
+  if (!flags.length) {
+    return '<p class="faint" style="margin-top:0;">The candidate flagged no questions for review.</p>';
+  }
+  return `<div class="card" style="background:var(--warning-bg);margin-bottom:12px;">
+    <div class="section-title" style="margin-bottom:6px;">⚑ ${flags.length} question(s) the candidate flagged for review</div>
+    <p class="faint" style="margin:0 0 8px;">The candidate's own bookmarks while sitting the assessment. Context only — flagging carries no marks and did not affect the score.</p>
+    ${flags.map((a) => `<div style="font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--line-soft);">${esc(a.category || a.type)} <span class="faint">— flagged ${esc(fmtDT(a.flaggedAt))}</span></div>`).join('')}
+  </div>`;
 }
 function fmtSec(s) { if (!s) return '—'; const m = Math.floor(s / 60), r = s % 60; return m + 'm ' + String(r).padStart(2, '0') + 's'; }
 function questionDetail(a, b) {
@@ -522,7 +541,12 @@ function tabIntegrity(d, el) {
 }
 function tabReports(d, el, id) {
   el.innerHTML = `<div class="card"><div class="section-title">Individual report</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" id="pdfBtn" data-busy="Preparing…">Download PDF</button><button class="btn btn-sm" id="csvBtn" data-busy="Preparing…">Export CSV</button></div></div>`;
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-primary btn-sm" id="printBtn">Print report</button>
+      <button class="btn btn-sm" id="pdfBtn" data-busy="Preparing…">Download PDF</button>
+      <button class="btn btn-sm" id="csvBtn" data-busy="Preparing…">Export CSV</button></div>
+    <p class="faint" style="margin:10px 0 0;">Print opens a clean page laid out for paper and uses your browser's own print dialogue, so Lao text renders with the fonts already on the machine. Download PDF produces the same report as a file. Neither changes any stored data.</p></div>`;
+  $('#printBtn').onclick = () => goto('print/' + id);
   $('#pdfBtn').onclick = () => downloadFile('/reports/candidate/' + id + '.pdf', 'report.pdf');
   $('#csvBtn').onclick = () => downloadFile('/reports/candidate/' + id + '.csv', 'report.csv');
 }
@@ -539,6 +563,132 @@ async function viewLinks(_, el) {
   el.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Token</th><th>Status</th><th>Created</th><th>Expires</th><th>Accessed</th><th>Attempts</th><th></th></tr></thead>
   <tbody>${links.map((l) => `<tr><td>${esc(l.candidateName)} <span class="faint mono" style="font-size:11px;">${l.candidateCode}</span></td><td class="mono faint">${l.token.slice(0, 10)}…</td><td><span class="badge badge-${{ ACTIVE: 'success', EXPIRED: 'warning', USED: 'info', REVOKED: 'danger' }[l.status]}">${l.status}</span></td><td class="faint">${fmtT(l.createdAt)}</td><td class="faint">${fmtT(l.expiresAt)}</td><td class="faint">${l.firstAccessAt ? fmtT(l.firstAccessAt) : '—'}</td><td class="faint">${l.accessAttempts} (${l.successfulAccess} ok)</td><td><button class="btn btn-sm" data-id="${l.candidateId}">View</button></td></tr>`).join('') || '<tr><td colspan="8" class="faint">No links yet.</td></tr>'}</tbody></table></div>`;
   $$('button[data-id]', el).forEach((b) => (b.onclick = () => goto('candidates/' + b.dataset.id)));
+}
+
+// ---------------- Print view ----------------
+// A real browser print view rather than another generated document: the page
+// is rendered by the browser, so Lao and English text use the fonts already on
+// the machine and read correctly on paper.
+//
+// It is reached through the ordinary admin router, so it carries the same
+// authentication and RBAC as every other screen — there is no unauthenticated
+// print URL. It reads the candidate record and writes nothing.
+async function viewPrintCandidate(params, el) {
+  const id = params[0];
+  if (!id) { el.innerHTML = '<div class="empty"><h3>No candidate selected</h3></div>'; return; }
+  el.innerHTML = 'Loading…';
+  const d = await api('/candidates/' + id);
+  const c = d.candidate;
+  const s = d.session;
+  const sc = d.scores;
+  const flags = (d.answers || []).filter((a) => a.flagged);
+
+  const row = (k, v) => `<tr><th style="text-align:left;padding:3px 10px 3px 0;font-weight:600;white-space:nowrap;">${esc(k)}</th><td style="padding:3px 0;">${esc(v == null || v === '' ? '\u2014' : v)}</td></tr>`;
+
+  el.innerHTML = `
+    <div class="no-print" style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+      <button class="btn btn-primary" id="doPrint">Print this report</button>
+      <button class="btn" id="backFromPrint">\u2190 Back to candidate</button>
+      <span class="faint">Nothing on this page is saved or changed by printing.</span>
+    </div>
+
+    <div class="printdoc" id="printDoc">
+      <div class="printhead">
+        <div>
+          <div class="printbrand">LALCO</div>
+          <div class="faint" style="font-size:11.5px;">Lao Asean Leasing Public Company</div>
+        </div>
+        <div style="text-align:right;font-size:11.5px;" class="faint">
+          Candidate assessment report<br>Printed ${esc(new Date().toLocaleString())}<br>Printed by ${esc(AUTH && AUTH.user ? AUTH.user.name : '')}
+        </div>
+      </div>
+
+      <h2 style="margin:14px 0 2px;">${esc(c.full_name)}</h2>
+      <div class="faint mono" style="margin-bottom:12px;">LALCO ID: ${esc(c.code)}</div>
+
+      <div class="printgrid">
+        <section>
+          <h3 class="printh">Candidate</h3>
+          <table class="printkv">
+            ${row('LALCO ID', c.code)}
+            ${row('Full name', c.full_name)}
+            ${row('Application type', c.application_type)}
+            ${row('Position applied for', c.appliedPosition)}
+            ${row('Department', c.appliedDepartment)}
+            ${row('Branch', c.branch)}
+            ${row('Education', c.education)}
+            ${row('IQ', c.iq)}
+            ${row('GPA', c.gpa)}
+            ${row('Candidate status', c.status)}
+            ${row('Eligibility', d.eligibility ? d.eligibility.status : null)}
+          </table>
+        </section>
+
+        <section>
+          <h3 class="printh">Assessment</h3>
+          <table class="printkv">
+            ${row('Assessment', s && s.assessmentName ? s.assessmentName : 'LALCO Recruitment Assessment')}
+            ${row('Status', s ? (s.displayStatus || s.status) : 'Not started')}
+            ${row('Language sat in', s ? (s.language === 'lo' ? '\u0ea5\u0eb2\u0ea7 (Lao)' : 'English') : null)}
+            ${row('Started', s && s.started_at ? fmtDT(s.started_at) : null)}
+            ${row('Submitted', s && s.submitted_at ? fmtDT(s.submitted_at) : null)}
+            ${row('Allowed duration', s ? s.duration_minutes + ' minutes' : null)}
+            ${row('Pass threshold applied', s && s.pass_threshold != null ? s.pass_threshold + ' / ' + (s.total_max != null ? s.total_max : 100) : null)}
+          </table>
+        </section>
+      </div>
+
+      <h3 class="printh">Scores</h3>
+      <table class="printtable">
+        <thead><tr><th>Section</th><th>Marks</th></tr></thead>
+        <tbody>
+          <tr><td>Calculation</td><td class="mono">${esc(printScore(sc && sc.calc_marks, sc && sc.calc_max))}</td></tr>
+          <tr><td>Written</td><td class="mono">${esc(printScore(sc && sc.essay_marks, sc && sc.essay_max))}</td></tr>
+          <tr><td>Interview</td><td class="mono">${esc(printScore(sc && sc.interview_marks, sc && sc.interview_max))}</td></tr>
+          <tr><td><b>Final</b></td><td class="mono"><b>${esc(printScore(sc && sc.final_marks, s && s.total_max != null ? s.total_max : 100))}</b></td></tr>
+          <tr><td>Result</td><td>${sc && sc.pass != null ? (sc.pass ? 'PASS' : 'FAIL') : 'Not decided'}</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="printh">Question performance</h3>
+      <table class="printtable">
+        <thead><tr><th>#</th><th>Category</th><th>Marks</th><th>Time</th><th>Flagged by candidate</th></tr></thead>
+        <tbody>${(d.answers || []).filter((a) => a.type === 'CALC').map((a, i) => `<tr>
+          <td>Q${i + 1}</td>
+          <td>${esc(a.category || '\u2014')}</td>
+          <td class="mono">${a.breakdown ? esc(a.breakdown.marks + ' / ' + a.maxMarks) : 'Not answered'}</td>
+          <td class="mono">${esc(fmtSec(a.timeSpentSeconds))}</td>
+          <td>${a.flagged ? '\u2691 Yes \u2014 ' + esc(fmtDT(a.flaggedAt)) : '\u2014'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <p class="faint" style="font-size:11px;">Marks are shown as awarded. Model answers and internal marking detail are deliberately left off this printout.</p>
+
+      <h3 class="printh">Flagged for review by the candidate</h3>
+      ${flags.length
+        ? `<table class="printtable"><thead><tr><th>Question</th><th>Flagged at</th></tr></thead><tbody>${flags.map((a) => `<tr><td>${esc(a.category || a.type)}</td><td class="mono">${esc(fmtDT(a.flaggedAt))}</td></tr>`).join('')}</tbody></table>
+           <p class="faint" style="font-size:11px;">The candidate's own bookmarks while sitting the assessment. They carry no marks and did not affect the score.</p>`
+        : '<p class="faint">The candidate flagged no questions for review.</p>'}
+
+      <h3 class="printh">Assessment integrity</h3>
+      <p>Risk level: <b>${esc(d.integrity ? d.integrity.risk_level : 'Low')}</b></p>
+      ${d.integrity && d.integrity.evidence_json && JSON.parse(d.integrity.evidence_json).length
+        ? `<ul style="margin:4px 0 0 18px;padding:0;">${JSON.parse(d.integrity.evidence_json).map((e) => `<li style="font-size:12px;">${esc(e)}</li>`).join('')}</ul>
+           <p class="faint" style="font-size:11px;">Indicators requiring human review. Never used on their own to reject a candidate.</p>`
+        : '<p class="faint">No integrity concerns recorded.</p>'}
+
+      <div class="printfoot faint">
+        LALCO confidential \u2014 recruitment record for ${esc(c.code)}. Handle according to company data policy.
+      </div>
+    </div>`;
+
+  $('#doPrint').onclick = () => window.print();
+  $('#backFromPrint').onclick = () => goto('candidates/' + id);
+}
+
+// "0 / 30" and "Not marked" are different facts and must not look alike.
+function printScore(marks, max) {
+  if (marks == null) return 'Not marked';
+  return marks + (max != null ? ' / ' + max : '');
 }
 
 // ---------------- Assessments ----------------

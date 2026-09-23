@@ -87,6 +87,23 @@ const examLimiter = rateLimit({
   message: { error: 'Too many requests. Please slow down and try again shortly.' },
 });
 
+// Flagging is a cheap write a candidate can trigger by tapping a button, so it
+// gets its own tighter budget. Keyed by the exam token rather than the IP: a
+// whole office sitting the assessment through one NAT must not share a budget,
+// and one candidate hammering the button must not spend everyone else's.
+const FLAG_RATE_LIMIT = Math.max(10, Number(process.env.FLAG_RATE_LIMIT_PER_MIN) || 60);
+const flagLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: FLAG_RATE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => 'flag:' + (req.params.token || req.ip),
+  // The key is an exam token, not an address, so express-rate-limit's IPv6
+  // normalisation check does not apply to it.
+  validate: { keyGeneratorIpFallback: false },
+  message: { error: 'You are flagging questions too quickly. Please wait a moment.' },
+});
+
 const LOGIN_RATE_LIMIT = Math.max(5, Number(process.env.LOGIN_RATE_LIMIT_PER_15_MIN) || 20);
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -96,4 +113,4 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many login attempts. Please try again later.' },
 });
 
-module.exports = { signToken, verifyToken, requireAuth, requireRole, examLimiter, loginLimiter, JWT_SECRET };
+module.exports = { signToken, verifyToken, requireAuth, requireRole, examLimiter, flagLimiter, loginLimiter, JWT_SECRET };

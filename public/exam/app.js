@@ -39,6 +39,11 @@ const UI_STRINGS = {
     submit: 'Submit Assessment', back: 'Back', edit: 'Edit',
     switching: 'Switching…',
     laoUnavailable: 'Lao translation not available for this question. The English version is shown below.',
+    flag: 'Flag for review', unflag: 'Remove flag',
+    flagged: 'Flagged for review', notFlagged: 'Not flagged',
+    flagging: 'Saving…',
+    flagHint: 'Flagging is just a bookmark for you. It does not change your answer, your time or your marks.',
+    flaggedCount: (n) => `${n} flagged for review`,
   },
   lo: {
     // Filled in by the LALCO team. Anything left blank falls back to English —
@@ -48,6 +53,8 @@ const UI_STRINGS = {
     previous: null, next: null, review: null,
     submit: null, back: null, edit: null, switching: null,
     laoUnavailable: null,
+    flag: null, unflag: null, flagged: null, notFlagged: null,
+    flagging: null, flagHint: null, flaggedCount: null,
   },
 };
 
@@ -123,6 +130,9 @@ async function boot() {
   shell('<p class="muted">Loading your assessment…</p>');
   try {
     const info = await exam('');
+    STATE.candidateName = info.candidateName || null;
+    STATE.candidateCode = info.candidateCode || null;
+    STATE.assessmentName = info.assessmentName || null;
     if (info.session && info.session.status === 'AUTO_SUBMITTED') return renderTimeExpired(info.session);
     if (info.session && info.session.status === 'TERMINATED') return renderTerminated(info.session);
     if (info.session && (info.session.status === 'PAUSED' || info.session.paused)) return renderPaused(info.session);
@@ -220,6 +230,7 @@ async function renderQuestionFlow(info) {
   const qres = info.questions ? info : await exam('/questions');
   STATE.questions = qres.questions;
   STATE.answered = new Set(qres.answered || []);
+  STATE.flagged = new Set(qres.flagged || []);
   const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
   STATE.idx = saved && saved.idx < STATE.questions.length ? saved.idx : 0;
   STATE.step = 'question';
@@ -230,14 +241,19 @@ function persistLocalProgress() { try { localStorage.setItem(LS_KEY, JSON.string
 async function showQuestion() {
   const total = STATE.questions.length;
   const qMeta = STATE.questions[STATE.idx];
-  const { question: q, savedAnswer } = await exam('/question/' + qMeta.id);
+  const { question: q, savedAnswer, flagged } = await exam('/question/' + qMeta.id);
+  // The server is the authority on the flag, so a reload, a reconnect, a
+  // language switch and navigating back all show the true state.
+  if (!STATE.flagged) STATE.flagged = new Set();
+  if (flagged) STATE.flagged.add(q.id); else STATE.flagged.delete(q.id);
   const isEssay = q.type === 'ESSAY';
   let body;
   if (isEssay) {
     body = `${laoBannerHTML(q)}<div class="faint" style="margin-bottom:6px;">${t('questionOf', STATE.idx + 1, total)} — ${t('writtenResponse')}</div>
       <p style="font-size:14.5px;margin-bottom:14px;">${esc(q.text)}</p>
       <textarea id="ans" style="min-height:220px;" placeholder="Write your answer here...">${savedAnswer ? esc(savedAnswer.text) : ''}</textarea>
-      <div class="faint" style="margin-top:6px;">${t('autosave')}</div>`;
+      <div class="faint" style="margin-top:6px;">${t('autosave')}</div>
+      ${flagControlHTML(STATE.flagged.has(q.id))}`;
   } else {
     body = `${laoBannerHTML(q)}<div class="faint" style="margin-bottom:6px;">${t('questionOf', STATE.idx + 1, total)}</div>
       <p style="font-size:14.5px;margin-bottom:14px;">${esc(q.text)}</p>
@@ -249,7 +265,8 @@ async function showQuestion() {
         if (p.type === 'choice') return `<div class="field"><label class="field-label">${esc(p.label)}</label>${p.options.map((o) => `<label class="qopt ${existing === o.value ? 'checked' : ''}"><input type="radio" name="opt_${p.key}" value="${esc(o.value)}" ${existing === o.value ? 'checked' : ''}><span>${esc(o.label)}</span></label>`).join('')}</div>`;
         return `<div class="field"><label class="field-label">${esc(p.label)}</label><input type="number" step="0.01" inputmode="decimal" id="part_${p.key}" value="${existing != null && existing !== '' ? existing : ''}"></div>`;
       }).join('')}
-      <div class="faint">${t('autosave')}</div>`;
+      <div class="faint">${t('autosave')}</div>
+      ${flagControlHTML(STATE.flagged.has(q.id))}`;
   }
   shell(body, {
     timer: true, progress: Math.round((STATE.idx / total) * 100), stepLabel: `Question ${STATE.idx + 1} of ${total}`,
@@ -317,8 +334,65 @@ async function showQuestion() {
   reRender.saveFirst = saveAnswer;
   wireLanguageToggle(reRender);
 
+  wireFlagButton(q.id);
+
   if ($('#prevBtn')) $('#prevBtn').onclick = () => navigate(-1);
   $('#nextBtn').onclick = () => navigate(1);
+}
+
+// "Flag for review" — the candidate's own bookmark on this question.
+// Deliberately separated from the answer controls and from Next/Previous, so it
+// cannot be mistaken for submitting or for moving on.
+function flagControlHTML(isFlagged) {
+  return `<div class="flagrow">
+    <button type="button" class="btn btn-sm flagbtn ${isFlagged ? 'on' : ''}" id="flagBtn"
+      aria-pressed="${isFlagged ? 'true' : 'false'}">
+      <span class="flagmark" aria-hidden="true">${isFlagged ? '\u2691' : '\u2690'}</span>
+      <span id="flagLabel">${esc(isFlagged ? t('unflag') : t('flag'))}</span>
+    </button>
+    <span class="faint" id="flagState">${esc(isFlagged ? t('flagged') : t('notFlagged'))}</span>
+  </div>
+  <div class="faint" style="font-size:11.5px;margin:-2px 0 10px;">${esc(t('flagHint'))}</div>`;
+}
+
+// Wires the button. Flagging never saves, submits, re-orders or re-times
+// anything — it posts one call and repaints one button.
+function wireFlagButton(questionId) {
+  const btn = $('#flagBtn');
+  if (!btn) return;
+  let busy = false;
+  btn.onclick = async () => {
+    if (busy) return;
+    busy = true;
+    const wasFlagged = STATE.flagged.has(questionId);
+    const label = $('#flagLabel');
+    const previousLabel = label.textContent;
+    btn.disabled = true;
+    label.textContent = t('flagging');
+    try {
+      const res = await exam(wasFlagged ? '/unflag' : '/flag', {
+        method: 'POST', body: JSON.stringify({ questionId }),
+      });
+      // Trust the server's answer, not the optimistic guess.
+      if (res.flagged) STATE.flagged.add(questionId); else STATE.flagged.delete(questionId);
+      const nowFlagged = !!res.flagged;
+      btn.classList.toggle('on', nowFlagged);
+      btn.setAttribute('aria-pressed', nowFlagged ? 'true' : 'false');
+      label.textContent = nowFlagged ? t('unflag') : t('flag');
+      $('.flagmark', btn).textContent = nowFlagged ? '\u2691' : '\u2690';
+      $('#flagState').textContent = nowFlagged ? t('flagged') : t('notFlagged');
+    } catch (e) {
+      // The assessment ended or was paused while the button was being pressed:
+      // show the real state rather than a stale question screen.
+      if (e.status === 410) return renderTimeExpired(e.data || {});
+      if (e.status === 423) return renderPaused(e.data || {});
+      label.textContent = previousLabel;
+      toast((e.data && e.data.error) || 'Could not update the flag. Please try again.');
+    } finally {
+      busy = false;
+      if (btn.isConnected) btn.disabled = false;
+    }
+  };
 }
 
 // Shown when Lao is selected but this question has no APPROVED translation.
@@ -333,8 +407,10 @@ function laoBannerHTML(q) {
 async function showReview() {
   const qres = await exam('/questions');
   const answered = qres.answered || [];
+  STATE.flagged = new Set(qres.flagged || []);
   const total = STATE.questions.length;
   const unanswered = total - answered.length;
+  const flaggedCount = STATE.flagged.size;
   shell(`
     <h2 style="margin-bottom:12px;">Review your answers</h2>
     <div class="grid grid-2" style="margin-bottom:16px;">
@@ -342,8 +418,9 @@ async function showReview() {
       <div class="kpi"><div class="num">${unanswered}</div><div class="lbl">Unanswered</div></div>
     </div>
     ${unanswered ? `<div class="card" style="background:var(--warning-bg);"><b>You have ${unanswered} unanswered question(s).</b> You can go back before submitting.</div>` : ''}
-    <div class="table-wrap" style="margin-top:14px;"><table><thead><tr><th>#</th><th>Status</th><th></th></tr></thead>
-    <tbody>${STATE.questions.map((qq, i) => `<tr><td>${i + 1}</td><td>${answered.includes(qq.id) ? '<span class="badge badge-success">Answered</span>' : '<span class="badge badge-warning">Unanswered</span>'}</td><td><button class="btn btn-sm" data-i="${i}">Edit</button></td></tr>`).join('')}</tbody></table></div>
+    ${flaggedCount ? `<div class="card" style="background:var(--warning-bg);"><b>${esc(t('flaggedCount', flaggedCount))}.</b> Flagged questions are shown below so you can come back to them.</div>` : ''}
+    <div class="table-wrap" style="margin-top:14px;"><table><thead><tr><th>#</th><th>Status</th><th>Review</th><th></th></tr></thead>
+    <tbody>${STATE.questions.map((qq, i) => `<tr><td>${i + 1}</td><td>${answered.includes(qq.id) ? '<span class="badge badge-success">Answered</span>' : '<span class="badge badge-warning">Unanswered</span>'}</td><td>${STATE.flagged.has(qq.id) ? `<span class="badge badge-warning">\u2691 ${esc(t('flagged'))}</span>` : '<span class="faint">\u2014</span>'}</td><td><button class="btn btn-sm" data-i="${i}">Edit</button></td></tr>`).join('')}</tbody></table></div>
   `, { timer: true, nav: `<div class="pnav"><button class="btn" id="backBtn">Back</button><button class="btn btn-gold" id="submitBtn">Submit Assessment</button></div>` });
   startTimer();
   $$('button[data-i]').forEach((b) => (b.onclick = () => { STATE.idx = Number(b.dataset.i); STATE.step = 'question'; showQuestion(); }));
@@ -451,14 +528,33 @@ function renderTimeExpired(info) {
   </div>`);
 }
 
+// The candidate's own receipt. It carries only what they already know —
+// their name, their LALCO ID, which assessment they sat and when they
+// submitted it. No score, no answer, no marking information of any kind:
+// results are not the candidate's to print, and nothing here is graded yet.
 function renderDone(submittedAt) {
   clearInterval(STATE.timerInterval);
   shell(`<div style="text-align:center;padding-top:30px;">
     <div style="font-size:44px;margin-bottom:10px;">✓</div>
     <h2>Assessment submitted</h2>
     <p class="muted" style="margin-top:8px;">Thank you for completing the LALCO recruitment assessment. Our HR team will contact you regarding the next steps, including your interview.</p>
-    <p class="faint" style="margin-top:14px;">Submitted ${submittedAt ? new Date(submittedAt).toLocaleString() : ''}</p>
-  </div>`);
+  </div>
+  <div class="receipt" id="receipt">
+    <div class="receipthead"><b>LALCO</b> — Assessment submission confirmation</div>
+    <table class="receiptkv">
+      <tr><th>Candidate</th><td>${esc(STATE.candidateName || '')}</td></tr>
+      ${STATE.candidateCode ? `<tr><th>LALCO ID</th><td>${esc(STATE.candidateCode)}</td></tr>` : ''}
+      <tr><th>Assessment</th><td>${esc(STATE.assessmentName || 'LALCO Recruitment Assessment')}</td></tr>
+      <tr><th>Submitted</th><td>${esc(submittedAt ? new Date(submittedAt).toLocaleString() : '')}</td></tr>
+      <tr><th>Status</th><td>Submitted — awaiting marking</td></tr>
+    </table>
+    <p class="faint" style="font-size:11px;margin:10px 0 0;">Your results are not shown here. LALCO HR will contact you about the outcome.</p>
+  </div>
+  <div style="text-align:center;margin-top:16px;" class="no-print">
+    <button class="btn" id="printReceipt">Print confirmation</button>
+  </div>`, { language: false });
+  const p = $('#printReceipt');
+  if (p) p.onclick = () => window.print();
 }
 
 document.addEventListener('visibilitychange', () => {

@@ -21,6 +21,12 @@ function ensureColumn(table, column, definition) {
   }
 }
 
+// Question flags (Phase 3). Additive: an existing answer row is simply not
+// flagged. No answer, score, timing or ordering column is touched.
+ensureColumn('candidate_answers', 'flagged', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('candidate_answers', 'flagged_at', 'TEXT');
+ensureColumn('candidate_answers', 'flag_changed_at', 'TEXT');
+
 ensureColumn('assessment_sessions', 'google_sync_status', "TEXT NOT NULL DEFAULT 'NOT_REQUESTED'");
 // How the assessment was finalized. NULL on rows finalized before this existed.
 ensureColumn('assessment_sessions', 'submission_type', 'TEXT');

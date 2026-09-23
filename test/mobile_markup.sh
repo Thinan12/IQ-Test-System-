@@ -35,6 +35,20 @@ expect_contains "the whole option row is tappable, not just the dot" '<label cla
 expect_contains "option rows meet the 48px touch-target guidance" 'min-height:48px' "$EXAM_HTML"
 expect_contains "fields are 16px so iOS Safari does not zoom on focus" 'input,select,textarea{font-size:16px;}' "$EXAM_HTML"
 
+c_head "Flag control and print do not crowd the exam on a phone"
+expect_contains "the flag button is finger-sized" '.flagbtn{min-height:44px;}' "$EXAM_HTML"
+expect_contains "the flag control sits with the question, not in the sticky nav bar" '.flagrow{display:flex' "$EXAM_HTML"
+expect_not_contains "the flag button is NOT inside the bottom navigation bar" 'flagBtn' "$(grep 'class="pnav"' public/exam/app.js)"
+expect_contains "the flagged state is announced, not just coloured" 'aria-pressed' "$EXAM_JS"
+expect_contains "flagging shows it is working" "t('flagging')" "$EXAM_JS"
+# Printing belongs on the confirmation screen only. A print control during a
+# timed exam invites a candidate to leave the page mid-assessment.
+expect_contains "the candidate print button exists on the confirmation" 'printReceipt' "$EXAM_JS"
+expect_contains "and only inside the submitted-confirmation screen" 'renderDone' "$EXAM_JS"
+expect_not_contains "there is no print control on a question screen" 'printReceipt' "$(sed -n '/^async function showQuestion/,/^\/\/ "Flag for review"/p' public/exam/app.js)"
+expect_not_contains "nor on the review screen" 'printReceipt' "$(sed -n '/^async function showReview/,/^let SUBMITTING/p' public/exam/app.js)"
+expect_contains "the printed confirmation drops the exam chrome" '.ptop,.pnav,.no-print' "$EXAM_HTML"
+
 c_head "Timer, navigation, autosave"
 expect_contains "a countdown timer is rendered" 'class="timer"' "$EXAM_JS"
 expect_contains "the timer warns when time is low" 'timer.low' "$EXAM_HTML"

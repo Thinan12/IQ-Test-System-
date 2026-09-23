@@ -4,7 +4,7 @@ const { generateId } = require('../lib/tokens');
 const { finalizeSession, finalizeIfExpired, isExpired, displayStatus } = require('../lib/finalize');
 const { isPaused, linkLiveStatus, remainingSeconds } = require('../lib/examControl');
 const { resolveQuestionText, normaliseLanguage, DEFAULT_LANGUAGE } = require('../lib/questionText');
-const { examLimiter } = require('../middleware/auth');
+const { examLimiter, flagLimiter } = require('../middleware/auth');
 const { audit } = require('../lib/audit');
 
 const router = express.Router();
@@ -120,6 +120,10 @@ function respondWithCandidateContext(req, res, link, session) {
   const essayCount = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE type='ESSAY' AND active=1`).get().n;
   res.json({
     candidateName: c.full_name,
+    // The LALCO ID is released only once a session exists — that is, only after
+    // the candidate proved they already knew it at /start. Someone who merely
+    // holds the link never learns it from here.
+    candidateCode: session ? c.code : undefined,
     position: lookupName('positions', c.applied_position_id) || c.applied_position_id,
     assessmentName: assessment ? assessment.name : 'LALCO Recruitment Assessment',
     questionCount: attachedCount || calcCount + essayCount,
@@ -263,31 +267,38 @@ function requireActiveSession(req, res, next) {
   next();
 }
 
-// ---- Get question list (sanitized) + current answers for review/navigation ----
-router.get('/:token/questions', requireActiveSession, (req, res) => {
-  // The questions this assessment actually asks, in the order it asks them.
-  // Falls back to "every active question" for a session with no assessment
-  // (a database predating assessment management).
-  const assessmentId = req.session_.assessment_id;
-  const attached = assessmentId
+// The questions this assessment actually asks, in the order it asks them.
+// Falls back to "every active question" for a session with no assessment
+// (a database predating assessment management). This is also the authority on
+// which questions a session is allowed to touch at all.
+function questionsForSession(session) {
+  const attached = session.assessment_id
     ? db.prepare(
         `SELECT q.* FROM assessment_questions aq
            JOIN questions q ON q.id = aq.question_id
           WHERE aq.assessment_id = ? AND q.active = 1 AND COALESCE(q.archived,0) = 0
           ORDER BY aq.order_index`
-      ).all(assessmentId)
+      ).all(session.assessment_id)
     : [];
   // An archived question is withdrawn from new assessments but never deleted,
   // so completed assessments keep referencing it.
-  const questions = attached.length
+  return attached.length
     ? attached
     : db.prepare(`SELECT * FROM questions WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`).all();
+}
+
+// ---- Get question list (sanitized) + current answers for review/navigation ----
+router.get('/:token/questions', requireActiveSession, (req, res) => {
+  const questions = questionsForSession(req.session_);
   const answers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(req.session_.id);
   const lang = req.session_.language || DEFAULT_LANGUAGE;
   res.json({
     language: lang,
     questions: questions.map((q) => sanitizeQuestionForCandidate(q, lang)),
     answered: answers.filter((a) => a.answer_json && a.answer_json !== '{}').map((a) => a.question_id),
+    // Flags travel with the question list, so they survive a reload, a
+    // reconnect, navigation and a language switch without a separate request.
+    flagged: answers.filter((a) => a.flagged).map((a) => a.question_id),
     expiresAt: req.session_.expires_at,
   });
 });
@@ -307,6 +318,88 @@ router.get('/:token/question/:qid', requireActiveSession, (req, res) => {
   res.json({
     question: sanitizeQuestionForCandidate(q, req.session_.language || DEFAULT_LANGUAGE),
     savedAnswer: ans.answer_json ? JSON.parse(ans.answer_json) : null,
+    flagged: !!ans.flagged,
+    flaggedAt: ans.flagged ? ans.flagged_at : null,
+  });
+});
+
+// ---------------------------------------------------------------- FLAGGING
+// "Flag for review" is the candidate's own bookmark. It is deliberately inert:
+// it never touches the answer, the marks, the clock, the deadline, the order
+// the questions are asked in, or whether the assessment is submitted.
+//
+// Authorization is the exam token itself, which requireActiveSession resolves
+// to exactly one link -> one session -> one candidate. A candidate therefore
+// cannot address another candidate's session, and the question must belong to
+// the assessment that session is sitting.
+function questionForFlag(req, res) {
+  const questionId = String((req.body || {}).questionId || '');
+  if (!questionId) { res.status(400).json({ error: 'A question is required.' }); return null; }
+  const allowed = questionsForSession(req.session_).some((q) => q.id === questionId);
+  if (!allowed) {
+    // Same answer whether the question is someone else's, archived, or
+    // invented: nothing is confirmed about questions outside this assessment.
+    res.status(404).json({ error: 'That question is not part of this assessment.' });
+    return null;
+  }
+  return questionId;
+}
+
+function setFlag(req, res, flagged) {
+  const questionId = questionForFlag(req, res);
+  if (!questionId) return;
+
+  const now = new Date().toISOString();
+  const existing = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ? AND question_id = ?')
+    .get(req.session_.id, questionId);
+
+  // Already in the requested state: acknowledge, write nothing, audit nothing.
+  // A candidate tapping the button repeatedly cannot flood the table or the
+  // audit trail.
+  if (existing && !!existing.flagged === flagged) {
+    return res.json({ ok: true, questionId, flagged, changed: false, flaggedAt: existing.flagged_at || null });
+  }
+
+  if (existing) {
+    // Names ONLY flag columns. An answer being autosaved at the same moment
+    // cannot be clobbered by flagging, and time_spent/visits are untouched.
+    db.prepare('UPDATE candidate_answers SET flagged = ?, flagged_at = ?, flag_changed_at = ? WHERE id = ?')
+      .run(flagged ? 1 : 0, flagged ? now : null, now, existing.id);
+  } else {
+    // Flagging a question before typing anything into it: the row is created
+    // with no answer, exactly as visiting the question would.
+    db.prepare(
+      `INSERT INTO candidate_answers (id, session_id, question_id, started_at, visits, flagged, flagged_at, flag_changed_at)
+       VALUES (?,?,?,?,0,?,?,?)`
+    ).run(generateId('ans'), req.session_.id, questionId, now, flagged ? 1 : 0, flagged ? now : null, now);
+  }
+
+  // Audited as the candidate, identified by their LALCO code — never by a
+  // token, and no secret of any kind is recorded.
+  audit({
+    userName: req.candidate ? req.candidate.full_name : 'Candidate',
+    role: 'CANDIDATE',
+    action: flagged ? 'QUESTION_FLAGGED' : 'QUESTION_UNFLAGGED',
+    target: req.candidate ? req.candidate.code : req.session_.id,
+    oldValue: { flagged: !flagged },
+    newValue: { flagged, questionId, sessionId: req.session_.id, at: now },
+    ip: req.ip,
+  });
+
+  res.json({ ok: true, questionId, flagged, changed: true, flaggedAt: flagged ? now : null });
+}
+
+router.post('/:token/flag', flagLimiter, requireActiveSession, (req, res) => setFlag(req, res, true));
+router.post('/:token/unflag', flagLimiter, requireActiveSession, (req, res) => setFlag(req, res, false));
+
+// ---- Current flag state for this session ----
+router.get('/:token/flags', requireActiveSession, (req, res) => {
+  const rows = db.prepare(
+    'SELECT question_id, flagged_at FROM candidate_answers WHERE session_id = ? AND flagged = 1'
+  ).all(req.session_.id);
+  res.json({
+    flagged: rows.map((r) => r.question_id),
+    flaggedAt: rows.reduce((acc, r) => { acc[r.question_id] = r.flagged_at; return acc; }, {}),
   });
 });
 

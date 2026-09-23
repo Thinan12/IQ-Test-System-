@@ -153,6 +153,11 @@ router.get('/:id', (req, res) => {
         answer: a ? JSON.parse(a.answer_json || 'null') : null,
         timeSpentSeconds: a ? a.time_spent_seconds : 0,
         visits: a ? a.visits : 0,
+        // The candidate's own "flag for review" bookmark. Shown to evaluators
+        // as context for how the candidate worked — it carries no marks and
+        // never affects scoring.
+        flagged: a ? !!a.flagged : false,
+        flaggedAt: a && a.flagged ? a.flagged_at : null,
         breakdown,
       };
     });
@@ -373,8 +378,13 @@ function decorateSession(session) {
     const minutes = (parseDbDate(session.submitted_at) - parseDbDate(session.started_at)) / 60000;
     durationLabel = `${Math.round(minutes * 10) / 10} min of ${session.duration_minutes} min allowed`;
   }
+  const assessment = session.assessment_id
+    ? db.prepare('SELECT name FROM assessments WHERE id = ?').get(session.assessment_id)
+    : null;
   return {
     ...session,
+    // Which assessment was actually sat, for the record and for print.
+    assessmentName: assessment ? assessment.name : null,
     displayStatus: displayStatus(session),
     submissionType: session.submission_type || null,
     submissionReason: session.submission_reason || null,

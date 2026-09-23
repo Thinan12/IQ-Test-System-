@@ -275,6 +275,14 @@ CREATE TABLE IF NOT EXISTS candidate_answers (
   submitted_at TEXT,
   time_spent_seconds INTEGER NOT NULL DEFAULT 0,
   visits INTEGER NOT NULL DEFAULT 0,
+  -- "Flag for review": the candidate marking their own question to come back to.
+  -- It lives here because this row already IS (this candidate's session, this
+  -- question) and is already cascaded and cleaned up with the session. It is
+  -- presentation state only: nothing here is read by grading, the timer, the
+  -- deadline or the question order.
+  flagged INTEGER NOT NULL DEFAULT 0,
+  flagged_at TEXT,
+  flag_changed_at TEXT,
   UNIQUE(session_id, question_id)
 );
 

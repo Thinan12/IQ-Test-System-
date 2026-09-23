@@ -544,6 +544,195 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.keyboard.press('Escape');
     await page.waitForTimeout(600);
 
+    // -------------------------------- Question flags + print (Phase 3, 1-19)
+    head('Question flags and print — the full 19-step flow in a real browser');
+    const flagCtx = await browser.newContext();
+    const fp = await flagCtx.newPage();
+    const flagErrors = [];
+    fp.on('pageerror', (e) => flagErrors.push('pageerror: ' + e.message));
+    fp.on('console', (m) => { if (m.type() === 'error') flagErrors.push(m.text()); });
+
+    // A LOCAL test candidate on this throwaway server. No production data.
+    const flagCand = await page.evaluate(async () => {
+      const r = await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName: 'Flag Browser Candidate', applicationType: 'NORMAL', iq: 112, education: 'Bachelor Degree' }) });
+      const l = await api('/candidates/' + r.id + '/links', { method: 'POST' });
+      return { id: r.id, code: r.code, token: l.token };
+    });
+
+    // 1. the candidate opens a question
+    await fp.goto(`${BASE}/exam/${flagCand.token}`, { waitUntil: 'networkidle' });
+    await fp.fill('#vCode', flagCand.code);
+    await fp.check('#ack');
+    await fp.click('#startBtn');
+    await fp.waitForSelector('#flagBtn', { timeout: 15000 });
+    check(true, '1. the candidate reaches a question with a Flag control');
+    const flagSession = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ?').get(flagCand.id);
+    const firstQid = db.prepare(
+      `SELECT aq.question_id AS id FROM assessment_questions aq WHERE aq.assessment_id = ? ORDER BY aq.order_index LIMIT 1`
+    ).get(flagSession.assessment_id).id;
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'false', 'it starts unflagged');
+    check((await fp.locator('#flagState').innerText()).includes('Not flagged'), 'and says so in words');
+
+    // 2. flag it
+    const deadlineAtFlag = one('SELECT expires_at FROM assessment_sessions WHERE id = ?', flagSession.id);
+    await fp.click('#flagBtn');
+    await fp.waitForTimeout(1200);
+    check(one('SELECT flagged FROM candidate_answers WHERE session_id = ? AND question_id = ?', flagSession.id, firstQid) === 1,
+      '2. clicking Flag stored the flag');
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'true', 'the button shows the flagged state');
+    check((await fp.locator('#flagLabel').innerText()).toLowerCase().includes('remove'), 'and offers to remove it');
+    check(one('SELECT expires_at FROM assessment_sessions WHERE id = ?', flagSession.id) === deadlineAtFlag,
+      'flagging did NOT move the deadline');
+    check(one('SELECT status FROM assessment_sessions WHERE id = ?', flagSession.id) === 'IN_PROGRESS',
+      'and did NOT submit the assessment');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='QUESTION_FLAGGED' AND target=?", flagCand.code) > 0,
+      'flagging is audited against the candidate');
+
+    // 3-5. move away and come back
+    await fp.click('#nextBtn');
+    await fp.waitForTimeout(1400);
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'false',
+      '3. the next question is its own, unflagged');
+    await fp.click('#prevBtn');
+    await fp.waitForTimeout(1400);
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'true',
+      '4-5. returning to the question shows the flag still set');
+
+    // 6-7. answer it, and the flag and answer coexist
+    const fnums = await fp.$$('input[type="number"]');
+    check(fnums.length > 0, '6. the question renders an answer field');
+    await fnums[0].fill('3000');
+    await fp.waitForTimeout(1400);
+    check(one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND question_id = ? AND answer_json IS NOT NULL', flagSession.id, firstQid) === 1,
+      '7. the answer was autosaved');
+    check(one('SELECT flagged FROM candidate_answers WHERE session_id = ? AND question_id = ?', flagSession.id, firstQid) === 1,
+      'and the flag is still set on the same row');
+    check((await fp.locator('input[type="number"]').first().inputValue()) === '3000', 'the answer is still on screen');
+
+    // 8-9. English -> Lao
+    await fp.click('#langSwitch [data-lang="lo"]');
+    await fp.waitForTimeout(1800);
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', flagSession.id) === 'lo', '8. switched to Lao');
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'true', '9. the flag survives the switch to Lao');
+    check((await fp.locator('input[type="number"]').first().inputValue()) === '3000', 'and so does the typed answer');
+    check(one('SELECT expires_at FROM assessment_sessions WHERE id = ?', flagSession.id) === deadlineAtFlag,
+      'the deadline still has not moved');
+
+    // 10-11. Lao -> English
+    await fp.click('#langSwitch [data-lang="en"]');
+    await fp.waitForTimeout(1800);
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'true', '10-11. the flag survives the switch back to English');
+    check((await fp.locator('input[type="number"]').first().inputValue()) === '3000', 'and the answer with it');
+
+    // 12-13. a real page reload
+    await fp.reload({ waitUntil: 'networkidle' });
+    await fp.waitForSelector('#flagBtn', { timeout: 15000 });
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'true', '12-13. the flag survives a full page reload');
+    check(one('SELECT flagged FROM candidate_answers WHERE session_id = ? AND question_id = ?', flagSession.id, firstQid) === 1,
+      'the server, not the browser, is holding it');
+    check((await fp.locator('input[type="number"]').first().inputValue()) === '3000', 'the answer survived the reload too');
+
+    // 14-15. unflag
+    await fp.click('#flagBtn');
+    await fp.waitForTimeout(1400);
+    check(one('SELECT flagged FROM candidate_answers WHERE session_id = ? AND question_id = ?', flagSession.id, firstQid) === 0,
+      '14. clicking again removed the flag');
+    check((await fp.locator('#flagBtn').getAttribute('aria-pressed')) === 'false', '15. and the button says so');
+    check((await fp.locator('input[type="number"]').first().inputValue()) === '3000', 'unflagging did not clear the answer');
+    check(one("SELECT COUNT(*) FROM audit_logs WHERE action='QUESTION_UNFLAGGED' AND target=?", flagCand.code) > 0,
+      'unflagging is audited');
+
+    // Re-flag two questions so the admin and print views have something to show.
+    await fp.click('#flagBtn');
+    await fp.waitForTimeout(1200);
+    await fp.click('#nextBtn');
+    await fp.waitForTimeout(1400);
+    await fp.click('#flagBtn');
+    await fp.waitForTimeout(1200);
+    check(one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND flagged = 1', flagSession.id) === 2,
+      'two questions are now flagged');
+
+    const realErrorsFlag = flagErrors.filter((e) => !/favicon|status of 40[019]/i.test(e));
+    check(realErrorsFlag.length === 0, 'no console errors anywhere in the flag flow', realErrorsFlag.slice(0, 3).join(' | '));
+    await flagCtx.close();
+
+    // 16-17. the admin opens the candidate record and sees the flags
+    await page.goto(`${BASE}/admin/#/candidates/${flagCand.id}`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(1500);
+    await page.click('#profTabs button[data-t="questions"]');
+    await page.waitForTimeout(1500);
+    const qTabText = await page.locator('#profBody').innerText();
+    check(qTabText.includes('Flagged'), '16-17. the admin sees the candidate flags on the record');
+    check(/2 question\(s\) the candidate flagged/.test(qTabText), 'with a summary of how many', qTabText.slice(0, 120));
+
+    // 18. the admin print view
+    await page.click('#profTabs button[data-t="reports"]');
+    await page.waitForSelector('#printBtn', { timeout: 10000 });
+    await page.click('#printBtn');
+    await page.waitForSelector('.printdoc', { timeout: 10000 });
+    check(true, '18. the Print button opens a print view');
+
+    // 19. the printed content and layout
+    const printText = await page.locator('.printdoc').innerText();
+    check(printText.includes('Flag Browser Candidate'), '19. the printout names the candidate');
+    check(printText.includes(flagCand.code), 'and carries the LALCO ID', flagCand.code);
+    check(printText.includes('LALCO Recruitment Assessment'), 'and names the assessment');
+    check(/pass threshold applied/i.test(printText), 'and the pass threshold that was applied');
+    check(/flagged for review by the candidate/i.test(printText), 'and the candidate flags');
+    check(/question performance/i.test(printText), 'and the question performance');
+    check(/assessment integrity/i.test(printText), 'and the integrity summary');
+    // Nothing that would hand a reader the answer key.
+    check(!/toleran/i.test(printText), 'the printout carries no tolerance');
+    check(!/expected answer/i.test(printText), 'and no expected answer');
+
+    // The print LAYOUT, verified by actually emulating print media.
+    await page.emulateMedia({ media: 'print' });
+    await page.waitForTimeout(400);
+    check(!(await page.locator('.sidebar').isVisible()), 'printing hides the sidebar navigation');
+    check(!(await page.locator('.topbar').isVisible()), 'and the topbar');
+    check(!(await page.locator('#doPrint').isVisible()), 'and the Print button itself');
+    check(await page.locator('.printdoc').isVisible(), 'while the report itself remains');
+    await page.emulateMedia({ media: 'screen' });
+    await page.waitForTimeout(300);
+    check(await page.locator('#doPrint').isVisible(), 'and the controls come back on screen');
+
+    // Printing must not have changed anything.
+    check(one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND flagged = 1', flagSession.id) === 2,
+      'opening the print view changed no stored data');
+
+    // The candidate's own printable confirmation, after submitting.
+    const doneCtx = await browser.newContext();
+    const dp = await doneCtx.newPage();
+    const doneCand = await page.evaluate(async () => {
+      const r = await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName: 'Receipt Candidate', applicationType: 'NORMAL', iq: 108, education: 'Bachelor Degree' }) });
+      const l = await api('/candidates/' + r.id + '/links', { method: 'POST' });
+      return { id: r.id, code: r.code, token: l.token };
+    });
+    await dp.goto(`${BASE}/exam/${doneCand.token}`, { waitUntil: 'networkidle' });
+    await dp.fill('#vCode', doneCand.code);
+    await dp.check('#ack');
+    await dp.click('#startBtn');
+    await dp.waitForSelector('#nextBtn', { timeout: 15000 });
+    dp.once('dialog', (d) => d.accept());
+    await dp.evaluate(async () => {
+      const token = location.pathname.split('/').pop();
+      await fetch('/api/exam/' + token + '/submit', { method: 'POST' });
+    });
+    await dp.reload({ waitUntil: 'networkidle' });
+    await dp.waitForSelector('#receipt', { timeout: 10000 });
+    const receipt = await dp.locator('#receipt').innerText();
+    check(receipt.includes('Receipt Candidate'), 'the candidate confirmation names them');
+    check(receipt.includes(doneCand.code), 'and shows their LALCO ID');
+    check(receipt.includes('LALCO Recruitment Assessment'), 'and which assessment they sat');
+    check(/Submitted/.test(receipt), 'and that it was submitted');
+    check(!/\bPASS\b|\bFAIL\b|marks|score/i.test(receipt), 'but NO score or result', receipt.slice(0, 120));
+    check(await dp.locator('#printReceipt').isVisible(), 'and offers a Print button');
+    await dp.emulateMedia({ media: 'print' });
+    await dp.waitForTimeout(400);
+    check(!(await dp.locator('#printReceipt').isVisible()), 'which is hidden on the printed page');
+    check(await dp.locator('#receipt').isVisible(), 'while the confirmation itself prints');
+    await doneCtx.close();
+
     // ------------------------------------------------------------- modals
     head('Modals close cleanly');
     await page.click('.sidebar-nav a[data-nav="candidates"]');
