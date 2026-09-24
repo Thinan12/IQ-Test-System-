@@ -134,10 +134,10 @@ const UI_STRINGS = {
     langLabel: 'ລາວ', otherLangLabel: 'English',
 
     // ---- navigation and buttons (supplied, pending native sign-off)
-    previous: 'ກັບຄືນ',
+    previous: 'ກ່ອນໜ້າ',
     next: 'ຕໍ່ໄປ',
     review: 'ກວດຄືນຄຳຕອບ',
-    submit: 'ສົ່ງແບບປະເມີນ',
+    submit: 'ສົ່ງການປະເມີນ',
     back: 'ກັບຄືນ',
     edit: 'ແກ້ໄຂ',
     startAssessment: 'ເລີ່ມການປະເມີນ',
@@ -154,7 +154,7 @@ const UI_STRINGS = {
     // ---- flags (supplied, pending native sign-off)
     flag: 'ໝາຍໄວ້ເພື່ອກວດຄືນ',
     unflag: 'ເອົາເຄື່ອງໝາຍອອກ',
-    flagged: 'ໝາຍໄວ້ແລ້ວ',
+    flagged: 'ໝາຍໄວ້ເພື່ອກວດຄືນແລ້ວ',
     notFlagged: 'ຍັງບໍ່ໄດ້ໝາຍ',
     flagging: 'ກຳລັງບັນທຶກ…',
     flagHint: null,                         // LAO_TODO: sentence
@@ -198,7 +198,7 @@ const UI_STRINGS = {
     receiptTitle: null,                     // LAO_TODO
     receiptCandidate: 'ຜູ້ສະໝັກ',
     receiptId: null,                        // LAO_TODO: keep "LALCO ID" as a proper noun?
-    receiptAssessment: 'ແບບປະເມີນ',
+    receiptAssessment: 'ການປະເມີນ',
     receiptStatus: 'ສະຖານະ',
     receiptStatusValue: null,               // LAO_TODO: sentence
     receiptNoResults: null,                 // LAO_TODO: sentence
