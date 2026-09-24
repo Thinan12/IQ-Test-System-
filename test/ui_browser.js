@@ -1535,6 +1535,119 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(one('SELECT COUNT(*) FROM audit_logs WHERE action = ?', 'RECRUITMENT_RECORD_UPDATED') > 0,
       'and the change is attributable in the audit trail');
 
+    // The recruitment tab is the only tab that loads asynchronously, so it is
+    // the only one that can still be waiting on the server when the
+    // administrator clicks somewhere else. When that happens its element has
+    // already been replaced, and a renderer that carried on regardless would
+    // paint into nothing and bind a handler to an id that is no longer there.
+    //
+    // This holds the tab's own requests open so the navigation lands squarely
+    // inside the await, which is what makes the failure deterministic rather
+    // than a matter of timing.
+    head('Recruitment tab — abandoning it mid-load must not throw');
+    const raceErrors = [];
+    const onRaceError = (e) => raceErrors.push('pageerror: ' + e.message);
+    page.on('pageerror', onRaceError);
+    await page.route('**/api/admin/recruitment/**', async (route) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
+
+    await page.goto(`${BASE}/admin/#/candidates/${jCand.id}`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('#profTabs', { timeout: 15000 });
+    await page.click('#profTabs button[data-t="recruitment"]');
+    await page.waitForTimeout(250);                          // still inside the held request
+    await page.click('#profTabs button[data-t="overview"]'); // navigate away mid-load
+    await page.waitForTimeout(2600);                         // let the held request land
+    await page.unroute('**/api/admin/recruitment/**');
+
+    check(raceErrors.length === 0,
+      'no JavaScript error when the tab is abandoned while still loading',
+      raceErrors.slice(0, 2).join(' | '));
+    check(await page.locator('#rrSave').count() === 0,
+      'and the abandoned render did not paint over the tab that replaced it');
+    const abandonedText = await page.locator('#profBody').innerText();
+    check(!/Save recruitment record/.test(abandonedText),
+      'the overview the administrator asked for is what they are left looking at');
+
+    // The tab still works normally when it is not interrupted.
+    await page.click('#profTabs button[data-t="recruitment"]');
+    await page.waitForSelector('#rrSave', { timeout: 15000 });
+    check(await page.locator('#rrSave').count() === 1,
+      'and the tab still loads normally when it is left alone');
+    check(raceErrors.length === 0, 'with no error on the uninterrupted load');
+    page.off('pageerror', onRaceError);
+
+    // ---------------- The same race, across every async section
+    // The recruitment tab was one instance of a pattern the whole admin shares:
+    // a renderer awaits an API call and then writes into the element it was
+    // handed. renderShell() replaces document.body on every navigation, so any
+    // renderer still waiting when the administrator clicks elsewhere comes back
+    // to a detached element and to a document that no longer holds its ids.
+    //
+    // Every admin request is held open here and every section is clicked in
+    // turn faster than the server can answer, so each renderer in the app is
+    // abandoned mid-await — which is the condition that produced the
+    // intermittent "Cannot set properties of null (setting 'onclick')".
+    head('Rapid navigation \u2014 every async section abandoned mid-load');
+    const navErrors = [];
+    const onNavError = (e) => navErrors.push('pageerror: ' + e.message);
+    page.on('pageerror', onNavError);
+    // Unhandled rejections do not always surface as page errors, so they are
+    // collected in the page itself. Navigation here is by hash only, so this
+    // listener survives every one of the navigations below.
+    await page.evaluate(() => {
+      window.__rejections = [];
+      window.addEventListener('unhandledrejection', (e) => {
+        window.__rejections.push(String((e.reason && e.reason.message) || e.reason));
+      });
+    });
+    await page.route('**/api/admin/**', async (route) => {
+      await new Promise((r) => setTimeout(r, 700));
+      await route.continue();
+    });
+
+    const sections = await page.$$eval('.sidebar-nav a', (els) => els.map((e) => e.dataset.nav));
+    check(sections.length >= 10, `rapid navigation covers ${sections.length} sections`);
+    for (let pass = 0; pass < 2; pass++) {
+      for (const key of sections) {
+        await page.click(`.sidebar-nav a[data-nav="${key}"]`);
+        await page.waitForTimeout(120); // well inside the held request
+      }
+    }
+    // The candidate profile, its tabs and the print view are reached by hash
+    // rather than from the sidebar, so they are abandoned the same way.
+    const hashHop = async (h) => { await page.evaluate((x) => { location.hash = x; }, h); await page.waitForTimeout(140); };
+    await hashHop('#/candidates/' + jCand.id);
+    await hashHop('#/dashboard');
+    await hashHop('#/print/' + jCand.id);
+    await hashHop('#/iq');
+    await hashHop('#/candidates');
+
+    await page.waitForTimeout(3000); // let every held request land
+    await page.unroute('**/api/admin/**');
+    await page.waitForTimeout(600);
+
+    check(navErrors.length === 0,
+      'no JavaScript error while every section is abandoned mid-load',
+      navErrors.slice(0, 3).join(' | '));
+    check(!navErrors.some((e) => /Cannot (set|read) propert/.test(e)),
+      'in particular nothing bound a handler to a detached element');
+    const navRejections = await page.evaluate(() => window.__rejections || []);
+    check(navRejections.length === 0,
+      'and no unhandled promise rejection',
+      navRejections.slice(0, 3).join(' | '));
+
+    // A stale renderer exiting must not take the live one with it: the section
+    // the administrator actually ended on still has to render.
+    const settled = (await page.locator('#content').innerText()).trim();
+    check(settled !== '' && settled !== 'Loading\u2026',
+      'and the section left on screen still renders its own content',
+      settled.slice(0, 60));
+    check(await page.locator('.sidebar-nav a.active').getAttribute('data-nav') === 'candidates',
+      'with the sidebar showing where the administrator actually is');
+    page.off('pageerror', onNavError);
+
     // ------------------------ Lao end to end: sit, submit and print in Lao
     // The production smoke test could not prove this: that candidate switched
     // back to English before submitting, so the Lao branch of the receipt and

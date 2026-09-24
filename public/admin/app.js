@@ -1,6 +1,14 @@
 'use strict';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+// Every screen here renders by awaiting an API call and then writing into the
+// element it was handed. renderShell() replaces document.body wholesale, so the
+// moment the administrator clicks a different section that element is detached,
+// and the document-wide lookups the renderer goes on to make all return null —
+// which is how an ordinary second click produced "Cannot set properties of null
+// (setting 'onclick')". A renderer whose target has been detached has nothing
+// left worth doing, so it stops instead of painting into nothing.
+const alive = (n) => !!n && n.isConnected;
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // SQLite's datetime() stores 'YYYY-MM-DD HH:MM:SS' in UTC with no timezone
 // marker, and JavaScript parses that shape as LOCAL time — which showed every
@@ -134,9 +142,12 @@ function renderLogin() {
     try {
       const res = await fetch('/api/admin/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: $('#lEmail').value, password: $('#lPass').value }) });
       const data = await res.json();
-      if (!res.ok) { $('#lErr').textContent = data.error; return; }
+      // The form can be replaced while the request is in flight, so the error
+      // line is written only if it is still on the page.
+      const showErr = (m) => { const n = $('#lErr'); if (n) n.textContent = m; };
+      if (!res.ok) { showErr(data.error); return; }
       AUTH = data; saveAuth(); goto('dashboard'); render();
-    } catch (e) { $('#lErr').textContent = 'Could not reach server.'; }
+    } catch (e) { const n = $('#lErr'); if (n) n.textContent = 'Could not reach server.'; }
   };
 }
 function logout() { AUTH = null; saveAuth(); goto(''); render(); }
@@ -182,6 +193,7 @@ function renderShell(parts) {
 async function viewDashboard(_, el) {
   el.innerHTML = 'Loading…';
   const [{ candidates }, analytics] = await Promise.all([api('/candidates'), api('/analytics')]);
+  if (!alive(el)) return;
   el.innerHTML = `
     <div class="grid grid-4" style="margin-bottom:16px;">
       <div class="kpi"><div class="num">${analytics.totals.total}</div><div class="lbl">Total candidates</div></div>
@@ -213,12 +225,16 @@ async function viewCandidates(params, el) {
     </div>
     <div class="table-wrap"><table><thead><tr><th>Code</th><th>Name</th><th>Position</th><th>Type</th><th>Eligibility</th><th>Calc</th><th>Essay</th><th>Interview</th><th>Final</th><th>Status</th><th>AI Risk</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>`;
   async function load() {
+    // Also reached from a debounced input, so the filters may already have gone
+    // with the view by the time this runs.
+    if (!alive(el)) return;
     const q = $('#fq').value;
     const archived = $('#fArchived').value;
     const params = [];
     if (q) params.push('q=' + encodeURIComponent(q));
     if (archived) params.push('archived=1');
     const { candidates } = await api('/candidates' + (params.length ? '?' + params.join('&') : ''));
+    if (!alive(el)) return;
     $('#rows').innerHTML = candidates.map((c) => `<tr style="cursor:pointer" data-id="${c.id}">
       <td class="mono faint">${c.code}</td><td>${esc(c.fullName)}${c.isDemo ? ' <span class="badge badge-neutral">demo</span>' : ''}</td>
       <td class="faint">${esc(c.appliedPosition || '—')}</td><td>${c.applicationType === 'SCHOLARSHIP' ? '<span class="badge badge-info">Scholarship</span>' : '<span class="badge badge-neutral">Normal</span>'}</td>
@@ -325,6 +341,7 @@ async function viewCandidateDetail(params, el) {
   const id = params[0];
   el.innerHTML = 'Loading…';
   const d = await api('/candidates/' + id);
+  if (!alive(el)) return;
   const c = d.candidate;
   const tabs = [['overview', 'Overview'], ['recruitment', 'Recruitment report'], ['eligibility', 'Eligibility'], ['assessment', 'Assessment'], ['questions', 'Questions'], ['interview', 'Interview'], ['performance', 'Performance'], ['integrity', 'Integrity'], ['reports', 'Reports'], ['audit', 'Audit']];
   el.innerHTML = `
@@ -338,8 +355,19 @@ async function viewCandidateDetail(params, el) {
     <div id="profBody"></div>`;
   $$('#profTabs button').forEach((b) => (b.onclick = () => { profileTab = b.dataset.t; viewCandidateDetail(params, el); }));
   const body = $('#profBody');
+  if (!body) return;
   const renderers = { overview: tabOverview, recruitment: tabRecruitment, eligibility: tabEligibility, assessment: tabAssessment, questions: tabQuestions, interview: tabInterview, performance: tabPerformance, integrity: tabIntegrity, reports: tabReports, audit: tabAudit };
   (renderers[profileTab] || tabOverview)(d, body, id);
+}
+// A save handler re-opens the profile once the server has accepted the change.
+// The administrator may have navigated away while that request was in flight,
+// so the profile is re-rendered only when the container it lives in is still on
+// the page — otherwise the re-render would paint into a detached element and
+// bind its handlers to ids that are no longer in the document.
+function reopenCandidate(id, host) {
+  const content = alive(host) ? host.closest('#content') : null;
+  if (!content) return;
+  viewCandidateDetail([id], content);
 }
 function initials(n) { return (n || '').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase(); }
 function kv(k, v) { return `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line-soft);font-size:13px;"><span class="muted">${esc(k)}</span><span style="font-weight:500;text-align:right;">${esc(v == null || v === '' ? '—' : v)}</span></div>`; }
@@ -349,11 +377,16 @@ function kv(k, v) { return `<div style="display:flex;justify-content:space-betwe
 // not editable here — the attempt stays authoritative, so nothing on this
 // screen can disagree with what the candidate actually did.
 async function tabRecruitment(d, el, id) {
+  if (!alive(el)) return;
   el.innerHTML = 'Loading…';
   const [{ report }, meta] = await Promise.all([
     api('/recruitment/' + id),
     api('/recruitment/meta'),
   ]);
+  // Those two requests were awaited, so the administrator may have moved to
+  // another tab or another candidate while they were in flight. Rendering into
+  // an element that is no longer on the page would bind handlers to nothing.
+  if (!alive(el)) return;
   const c = report.candidate;
   const a = report.assessment;
   const iv = report.interview;
@@ -444,7 +477,9 @@ async function tabRecruitment(d, el, id) {
       <button class="btn btn-primary" id="rrSave" data-busy="Saving…">Save recruitment record</button>
     </div>`;
 
-  $('#rrSave').onclick = async () => {
+  const rrSave = $('#rrSave');
+  if (!rrSave) return;
+  rrSave.onclick = async () => {
     // The server validates every one of these again and is the authority.
     const r = await api('/recruitment/' + id, {
       method: 'PATCH',
@@ -461,7 +496,10 @@ async function tabRecruitment(d, el, id) {
       }),
     });
     toast(r.changed.length ? 'Recruitment record updated (' + r.changed.length + ' field(s)).' : 'Nothing changed.');
-    tabRecruitment(d, el, id);
+    // Awaited, so the refresh cannot still be running after the administrator
+    // has moved on; the guard at the top of the renderer then stops it writing
+    // into an element that has since been replaced.
+    await tabRecruitment(d, el, id);
   };
 }
 
@@ -544,7 +582,7 @@ function tabAssessment(d, el, id) {
     const language = picked ? picked.value : 'en';
     const r = await api('/candidates/' + id + '/links', { method: 'POST', body: JSON.stringify({ language }) });
     toast('New secure link generated · ' + langLabel(r.language) + '.');
-    viewCandidateDetail([id], el.parentElement);
+    reopenCandidate(id, el);
   };
   if ($('#copyLink')) $('#copyLink').onclick = () => copyText(`${location.origin}/exam/${active.token}`, 'Link copied.');
   wireLinkActions(d, id, el);
@@ -553,7 +591,7 @@ function tabAssessment(d, el, id) {
     if (!confirm('Revoke this assessment link? The candidate will no longer be able to open it. Link history is kept.')) return;
     await api('/candidates/links/' + $('#revokeLink').dataset.link + '/revoke', { method: 'POST' });
     toast('Assessment link revoked.');
-    viewCandidateDetail([id], el.parentElement);
+    reopenCandidate(id, el);
   };
   if ($('#copyWA')) $('#copyWA').onclick = () => { copyText(`Dear ${d.candidate.full_name},\n\nYou are invited to complete the LALCO recruitment assessment.\n\nAssessment link:\n${location.origin}/exam/${active.token}\n\nThis invitation link expires shortly. Please complete the assessment within the allocated assessment time once you begin.\n\nThank you.`, 'WhatsApp message copied.'); };
 }
@@ -669,13 +707,14 @@ function wireEssayCard(d, id, el) {
   $('#saveEssay').onclick = async () => {
     const rubricScores = {}; ['content', 'accuracy', 'reasoning', 'communication', 'professionalism'].forEach((k) => { rubricScores[k] = Number($('#rub_' + k).value) || 0; });
     await api('/candidates/' + id + '/essay-score', { method: 'POST', body: JSON.stringify({ rubricScores, comments: $('#essayComments').value }) });
-    toast('Essay score saved.'); viewCandidateDetail([id], el.closest('#content'));
+    toast('Essay score saved.'); reopenCandidate(id, el);
   };
 }
 
 function tabInterview(d, el, id) {
   el.innerHTML = 'Loading…';
   Promise.all([api('/questions/interview/questions'), api('/questions/interview/criteria')]).then(([qres, cres]) => {
+    if (!alive(el)) return;
     const s = d.scores; const existing = s && s.interview_breakdown_json ? JSON.parse(s.interview_breakdown_json) : {};
     el.innerHTML = `<div class="card"><div class="section-title">Interview questions</div>${qres.questions.filter((q) => q.active).map((q) => `<div style="padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13px;">${esc(q.text)} ${q.disqualifying ? '<span class="badge badge-warning">Can disqualify</span>' : ''}</div>`).join('')}</div>
     <div class="card" style="margin-top:14px;"><div class="section-title">Scoring rubric (40 marks)</div><div class="grid grid-2">${cres.criteria.map((c) => `<div class="field"><label class="field-label">${c.label} (0–${c.max_marks}) <span class="faint">${esc(c.hint || '')}</span></label><input type="number" min="0" max="${c.max_marks}" id="crit_${c.key}" value="${existing[c.key] ?? ''}"></div>`).join('')}</div>
@@ -684,7 +723,7 @@ function tabInterview(d, el, id) {
     $('#saveIv').onclick = async () => {
       const scores = {}; cres.criteria.forEach((c) => { scores[c.key] = Number($('#crit_' + c.key).value) || 0; });
       await api('/candidates/' + id + '/interview-score', { method: 'POST', body: JSON.stringify({ scores, comments: $('#ivComments').value }) });
-      toast('Interview score saved.'); viewCandidateDetail([id], el.closest('#content'));
+      toast('Interview score saved.'); reopenCandidate(id, el);
     };
   });
 }
@@ -721,6 +760,7 @@ function tabReports(d, el, id) {
 }
 function tabAudit(d, el, id) {
   api('/audit?q=' + encodeURIComponent(d.candidate.code)).then(({ logs }) => {
+    if (!alive(el)) return;
     el.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Timestamp</th><th>User</th><th>Action</th><th>Target</th></tr></thead>
     <tbody>${logs.map((l) => `<tr><td class="faint mono">${fmtDT(l.created_at)}</td><td>${esc(l.user_name)}</td><td>${esc(l.action)}</td><td class="faint">${esc(l.target)}</td></tr>`).join('') || '<tr><td colspan="4" class="faint">No entries.</td></tr>'}</tbody></table></div>`;
   });
@@ -729,6 +769,7 @@ function tabAudit(d, el, id) {
 // ---------------- Links (global) ----------------
 async function viewLinks(_, el) {
   const { links } = await api('/links');
+  if (!alive(el)) return;
   el.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Token</th><th>Status</th><th>Created</th><th>Expires</th><th>Accessed</th><th>Attempts</th><th></th></tr></thead>
   <tbody>${links.map((l) => `<tr><td>${esc(l.candidateName)} <span class="faint mono" style="font-size:11px;">${l.candidateCode}</span></td><td class="mono faint">${l.token.slice(0, 10)}…</td><td><span class="badge badge-${{ ACTIVE: 'success', EXPIRED: 'warning', USED: 'info', REVOKED: 'danger' }[l.status]}">${l.status}</span></td><td class="faint">${fmtT(l.createdAt)}</td><td class="faint">${fmtT(l.expiresAt)}</td><td class="faint">${l.firstAccessAt ? fmtT(l.firstAccessAt) : '—'}</td><td class="faint">${l.accessAttempts} (${l.successfulAccess} ok)</td><td><button class="btn btn-sm" data-id="${l.candidateId}">View</button></td></tr>`).join('') || '<tr><td colspan="8" class="faint">No links yet.</td></tr>'}</tbody></table></div>`;
   $$('button[data-id]', el).forEach((b) => (b.onclick = () => goto('candidates/' + b.dataset.id)));
@@ -747,6 +788,7 @@ async function viewPrintCandidate(params, el) {
   if (!id) { el.innerHTML = '<div class="empty"><h3>No candidate selected</h3></div>'; return; }
   el.innerHTML = 'Loading…';
   const d = await api('/candidates/' + id);
+  if (!alive(el)) return;
   const c = d.candidate;
   const s = d.session;
   const sc = d.scores;
@@ -877,6 +919,7 @@ async function viewAssessments(_, el) {
     if (showArchived) params.push('archived=1');
     if (search) params.push('q=' + encodeURIComponent(search));
     const { assessments, canEdit } = await api('/assessments' + (params.length ? '?' + params.join('&') : ''));
+    if (!alive(el)) return;
 
     el.innerHTML = `
       <div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
@@ -1132,6 +1175,9 @@ async function viewQuestions(_, el) {
   let showArchived = false;
 
   async function show(tab) {
+    // Re-entered by the tab buttons, the archive filter and every question
+    // action, any of which can be followed by a navigation.
+    if (!alive(el)) return;
     el.innerHTML = `<div class="tabs">
         <button class="${tab === 'calc' ? 'active' : ''}" data-qt="calc">Calculation</button>
         <button class="${tab === 'essay' ? 'active' : ''}" data-qt="essay">Essay</button>
@@ -1142,6 +1188,7 @@ async function viewQuestions(_, el) {
     if (tab === 'interview') return showInterview();
 
     const bank = await api('/questions' + (showArchived ? '?archived=1' : ''));
+    if (!alive(el)) return;
     const questions = bank.questions;
     TRANSLATION_CONFIGURED = !!bank.translationConfigured;
     const list = questions.filter((q) => q.type === tab.toUpperCase());
@@ -1166,6 +1213,7 @@ async function viewQuestions(_, el) {
   async function showInterview() {
     const { questions } = await api('/questions/interview/questions');
     const { criteria } = await api('/questions/interview/criteria');
+    if (!alive(el)) return;
     $('#qBody').innerHTML = `<div class="card"><div class="section-title">Interview questions ${canEditQuestions() ? '<button class="btn btn-sm" id="addIv" data-busy="Adding…">+ Add</button>' : ''}</div>
       ${questions.map((q) => `<div style="padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13px;">${esc(q.text)} ${q.disqualifying ? '<span class="badge badge-warning">Can disqualify</span>' : ''}</div>`).join('')}</div>
       <div class="card" style="margin-top:14px;"><div class="section-title">Scoring rubric (40 marks)</div><table><thead><tr><th>Criterion</th><th>Max</th></tr></thead><tbody>${criteria.map((c) => `<tr><td>${esc(c.label)}</td><td>${c.max_marks}</td></tr>`).join('')}</tbody></table></div>`;
@@ -1641,6 +1689,7 @@ async function viewIqTest(parts, el) {
       TRANSLATION_CONFIGURED = !!lim.configured;
     } catch (e) { TRANSLATION_CONFIGURED = false; }
   }
+  if (!alive(el)) return;
   if (parts && parts[0] === 'result' && parts[1]) return viewIqResult(parts[1], el);
 
   el.innerHTML = `<div class="tabs">
@@ -1659,6 +1708,7 @@ async function viewIqTest(parts, el) {
 async function iqQuestionsTab(el) {
   const query = (iqShowArchived ? '?archived=1' : '?archived=0') + (iqCategoryFilter ? '&category=' + encodeURIComponent(iqCategoryFilter) : '');
   const { questions } = await api('/iq/questions' + query);
+  if (!alive(el)) return;
   const cats = (IQ_META.categories || []);
 
   $('#iqBody').innerHTML = `
@@ -1927,6 +1977,7 @@ function openIqQuestionModal(question, onDone, opts) {
 // -------------------------------------------------------------------- tests
 async function iqTestsTab(el) {
   const { assessments } = await api('/assessments');
+  if (!alive(el)) return;
   const tests = assessments.filter((a) => a.assessmentType === 'IQ_TEST');
   $('#iqBody').innerHTML = `
     <div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
@@ -2015,6 +2066,7 @@ function openIqTestModal(onDone) {
 // ------------------------------------------------------------------ results
 async function iqResultsTab(el) {
   const { results, estimatedIqDisclaimer } = await api('/iq/results');
+  if (!alive(el)) return;
   $('#iqBody').innerHTML = `
     <div class="table-wrap"><table><thead><tr><th>Candidate</th><th>LALCO ID</th><th>Test</th><th>Language</th><th>Correct</th><th>Score</th><th>Estimated</th><th>Duration</th><th></th></tr></thead>
       <tbody>${results.map((r) => `<tr>
@@ -2034,6 +2086,7 @@ async function iqResultsTab(el) {
 
 async function viewIqResult(sessionId, el) {
   const { result, estimatedIqDisclaimer } = await api('/iq/results/' + encodeURIComponent(sessionId));
+  if (!alive(el)) return;
   const cats = Object.keys(result.categoryScores || {});
   el.innerHTML = `
     <button class="btn btn-sm" id="iqBack" style="margin-bottom:12px;">← Back to results</button>
@@ -2079,6 +2132,7 @@ async function viewIqResult(sessionId, el) {
 // ---------------- Interviews queue ----------------
 async function viewInterviews(_, el) {
   const { queue } = await api('/interviews/queue');
+  if (!alive(el)) return;
   el.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Calc</th><th>Essay</th><th>Interview</th><th></th></tr></thead>
   <tbody>${queue.map((q) => `<tr><td>${esc(q.fullName)}</td><td class="mono">${q.calc}/30</td><td class="mono">${q.essay}/30</td><td class="mono">${q.interview != null ? q.interview + '/40' : '<span class="badge badge-warning">Pending</span>'}</td><td><button class="btn btn-sm" data-id="${q.id}">${q.interview != null ? 'View' : 'Score'} →</button></td></tr>`).join('') || '<tr><td colspan="5" class="faint">No candidates ready for interview.</td></tr>'}</tbody></table></div>`;
   $$('button[data-id]', el).forEach((b) => (b.onclick = () => { profileTab = 'interview'; goto('candidates/' + b.dataset.id); }));
@@ -2087,6 +2141,7 @@ async function viewInterviews(_, el) {
 // ---------------- Analytics ----------------
 async function viewAnalytics(_, el) {
   const a = await api('/analytics');
+  if (!alive(el)) return;
   el.innerHTML = `<div class="grid grid-4" style="margin-bottom:14px;">
     <div class="kpi"><div class="num">${a.totals.total}</div><div class="lbl">Total</div></div>
     <div class="kpi"><div class="num">${a.totals.eligible}</div><div class="lbl">Eligible</div></div>
@@ -2104,14 +2159,17 @@ async function viewAnalytics(_, el) {
   </div>`;
   $('#csvBatch').onclick = () => downloadFile('/reports/batch.csv', 'batch.csv');
   $('#xlsxBatch').onclick = () => downloadFile('/reports/batch.xlsx', 'batch.xlsx');
+  // The export takes a while; the administrator may be on another screen by the
+  // time it answers, so the progress line is written only if it is still there.
+  const sheetsMsg = (t) => { const n = $('#sheetsBatchMsg'); if (n) n.textContent = t; };
   $('#sheetsBatch').onclick = async () => {
-    $('#sheetsBatchMsg').textContent = 'Exporting…';
+    sheetsMsg('Exporting…');
     try {
       const r = await api('/reports/google-sheets', { method: 'POST' });
-      $('#sheetsBatchMsg').textContent = `Candidates ${r.candidates} · Assessments ${r.assessments} · Questions ${r.questions} · Interviews ${r.interviews} · Errors ${r.errors}`;
+      sheetsMsg(`Candidates ${r.candidates} · Assessments ${r.assessments} · Questions ${r.questions} · Interviews ${r.interviews} · Errors ${r.errors}`);
       toast('Exported to Google Sheets.');
     } catch (e) {
-      $('#sheetsBatchMsg').textContent = 'Google Sheets unavailable — data remains in the database and can be retried.';
+      sheetsMsg('Google Sheets unavailable — data remains in the database and can be retried.');
     }
   };
 }
@@ -2119,6 +2177,7 @@ async function viewAnalytics(_, el) {
 // ---------------- Scholarship ----------------
 async function viewScholarship(_, el) {
   const { policy } = await api('/scholarship');
+  if (!alive(el)) return;
   el.innerHTML = `<div class="grid grid-2">
     ${['current', 'proposed'].map((kind) => `<div class="card"><div class="section-title">${kind === 'current' ? 'Current policy' : 'Proposed policy'}</div>
       ${['y3', 'y4'].map((yr) => `<div style="margin-bottom:14px;"><b style="font-size:13px;">Year ${yr[1]}</b>
@@ -2138,6 +2197,7 @@ async function viewScholarship(_, el) {
 // ---------------- Settings ----------------
 async function viewSettings(_, el) {
   const { settings, eligibilityRules } = await api('/settings');
+  if (!alive(el)) return;
 
   el.innerHTML = `<div class="grid grid-2">
     <div class="card"><div class="section-title">Eligibility rules</div>
@@ -2215,8 +2275,12 @@ async function viewSettings(_, el) {
 const DELETE_PHRASE = 'DELETE ALL CANDIDATES';
 
 async function viewDataManagement(_, el) {
+  // Re-entered after a sync, a demo create/delete and a deletion, so the first
+  // guard covers the callers and the second covers this call's own wait.
+  if (!alive(el)) return;
   el.innerHTML = 'Loading…';
   const d = await api('/settings/data-management');
+  if (!alive(el)) return;
   const s = d.stats;
   const sheetsState = d.googleSyncConfigured
     ? `<span class="badge badge-success">Configured</span>`
@@ -2308,14 +2372,15 @@ async function viewDataManagement(_, el) {
   $('#retrySyncBtn').onclick = () => runSync('/settings/data-management/google-sync/retry');
 
   async function runSync(path) {
-    $('#syncResult').textContent = 'Syncing…';
+    const syncResult = (html) => { const n = $('#syncResult'); if (n) n.innerHTML = html; };
+    syncResult('Syncing…');
     try {
       const r = await api(path, { method: 'POST' });
-      $('#syncResult').innerHTML = `<b>Candidates synced:</b> ${r.candidates} &nbsp; <b>Assessments synced:</b> ${r.assessments} &nbsp; <b>Questions synced:</b> ${r.questions} &nbsp; <b>Interviews synced:</b> ${r.interviews} &nbsp; <b>Errors:</b> ${r.errors}`;
+      syncResult(`<b>Candidates synced:</b> ${r.candidates} &nbsp; <b>Assessments synced:</b> ${r.assessments} &nbsp; <b>Questions synced:</b> ${r.questions} &nbsp; <b>Interviews synced:</b> ${r.interviews} &nbsp; <b>Errors:</b> ${r.errors}`);
       toast('Google Sheets sync completed.');
       viewDataManagement(_, el);
     } catch (e) {
-      $('#syncResult').innerHTML = `<span style="color:var(--danger);">${esc(e.message)}</span> — assessment results remain safely stored in SQLite and can be retried.`;
+      syncResult(`<span style="color:var(--danger);">${esc(e.message)}</span> — assessment results remain safely stored in SQLite and can be retried.`);
     }
   }
 
@@ -2350,7 +2415,9 @@ async function viewDataManagement(_, el) {
     modal.style.display = 'flex';
     phrase.focus();
     const { preview } = await api('/settings/data-management/delete-all-candidate-data/preview');
-    $('#deletePreview').textContent = `About to remove ${preview.candidates} candidates, ${preview.assessments} assessment sessions, ${preview.answers} answers and ${preview.links} assessment links.`;
+    const previewEl = $('#deletePreview');
+    if (!previewEl) return;
+    previewEl.textContent = `About to remove ${preview.candidates} candidates, ${preview.assessments} assessment sessions, ${preview.answers} answers and ${preview.links} assessment links.`;
   };
   $('#cancelDeleteBtn').onclick = closeDeleteModal;
 
@@ -2369,6 +2436,7 @@ async function viewDataManagement(_, el) {
       });
       modal.style.display = 'none';
       toast('Candidate data successfully deleted.');
+      if (!alive(el)) return;
       el.innerHTML = `<div class="card"><div class="section-title">Candidate data successfully deleted.</div>
         <ul style="margin:0 0 12px 18px;">${r.summary.map((line) => `<li>${esc(line)}</li>`).join('')}</ul>
         <p class="faint">The question bank, admin users, scoring rules and the audit log were kept. An audit record of this deletion has been written.</p>
@@ -2413,7 +2481,7 @@ function candidateLifecycleHTML(d) {
 }
 
 function wireCandidateLifecycle(d, id, el) {
-  const reload = () => viewCandidateDetail([id], el.parentElement);
+  const reload = () => reopenCandidate(id, el);
   if ($('#archiveCandBtn')) $('#archiveCandBtn').onclick = async () => {
     if (!confirm('Archive this candidate? They will be hidden from the active list but nothing is deleted.')) return;
     await api('/candidates/' + id + '/archive', { method: 'POST' });
@@ -2545,7 +2613,7 @@ function wireLinkActions(d, id, el) {
       }
       await api('/exam-control/links/' + linkId + '/' + act, { method: 'POST', body });
       toast('Link ' + (act === 'extend' ? 'expiry extended' : act + 'd') + '.');
-      viewCandidateDetail([id], el.parentElement);
+      reopenCandidate(id, el);
     };
   });
 }
@@ -2560,6 +2628,7 @@ function fmtRemaining(seconds) {
 async function viewLive(_, el) {
   async function load() {
     const { assessments, pausePolicy } = await api('/exam-control/live');
+    if (!alive(el)) return;
     const rows = assessments.map((a) => {
       const act = (name, label, busy, tone) => a.availableActions.includes(name)
         ? `<button class="btn btn-sm ${tone || ''}" data-live="${name}" data-sid="${a.sessionId}" data-lid="${a.linkId || ''}" data-busy="${busy}">${label}</button>` : '';
@@ -2640,6 +2709,10 @@ async function viewLive(_, el) {
 
   el.innerHTML = 'Loading…';
   await load();
+  // renderShell() stops the refresh when it replaces a view. If that already
+  // happened while this first load was in flight, installing a timer here would
+  // leave it polling for a screen nobody is looking at.
+  if (!alive(el)) return;
   stopLiveRefresh();
   LIVE_TIMER = setInterval(load, 15000);
 }
@@ -2648,6 +2721,7 @@ async function viewLive(_, el) {
 async function viewUsers(_, el) {
   async function load() {
     const { users, roles, minPasswordLength } = await api('/users');
+    if (!alive(el)) return;
     el.innerHTML = `<div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;">
         <div><b>${users.length}</b> account(s)</div><span style="flex:1"></span>
         <button class="btn btn-primary btn-sm" id="newUserBtn">+ New User</button>
@@ -2738,7 +2812,14 @@ function openUserModal(user, roles, minPasswordLength, onDone) {
 // ---------------- Audit ----------------
 async function viewAudit(_, el) {
   el.innerHTML = `<div class="card" style="margin-bottom:12px;"><input id="aq" placeholder="Search..."></div><div class="table-wrap"><table><thead><tr><th>Timestamp</th><th>User</th><th>Role</th><th>Action</th><th>Target</th></tr></thead><tbody id="rows"></tbody></table></div>`;
-  async function load() { const { logs } = await api('/audit?q=' + encodeURIComponent($('#aq').value)); $('#rows').innerHTML = logs.map((l) => `<tr><td class="faint mono">${fmtDT(l.created_at)}</td><td>${esc(l.user_name)}</td><td class="faint">${esc(l.role)}</td><td>${esc(l.action)}</td><td class="faint mono">${esc(l.target)}</td></tr>`).join('') || '<tr><td colspan="5" class="faint">No entries.</td></tr>'; }
+  async function load() {
+    // Debounced from the search box, so the view may already have been replaced
+    // both before the request goes out and after it comes back.
+    if (!alive(el)) return;
+    const { logs } = await api('/audit?q=' + encodeURIComponent($('#aq').value));
+    if (!alive(el)) return;
+    $('#rows').innerHTML = logs.map((l) => `<tr><td class="faint mono">${fmtDT(l.created_at)}</td><td>${esc(l.user_name)}</td><td class="faint">${esc(l.role)}</td><td>${esc(l.action)}</td><td class="faint mono">${esc(l.target)}</td></tr>`).join('') || '<tr><td colspan="5" class="faint">No entries.</td></tr>';
+  }
   $('#aq').addEventListener('input', debounce(load, 300));
   load();
 }
