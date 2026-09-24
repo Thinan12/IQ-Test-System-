@@ -29,32 +29,183 @@ let STATE = { step: 'loading', questions: [], idx: 0, expiresAt: null, timerInte
 // Candidate-facing interface strings. English is the source language; the Lao
 // column is filled in by the LALCO team. A blank Lao entry falls back to
 // English rather than showing an empty control.
+// Candidate-facing strings. English is the SOURCE language: every English
+// string here is exactly what a candidate has always been shown.
+//
+// Anything null in `lo` falls back to English, and that fallback is
+// deliberate — correct English beats guessed Lao in front of a candidate.
+//
+// LAO REVIEW STATUS -- read before changing:
+//   * The Lao below is standard interface terminology (buttons, labels,
+//     status words) supplied for NATIVE SIGN-OFF. It is not machine
+//     translation of anything a candidate is marked on.
+//   * Longer prose (instructions, paused/ended/expired explanations, the
+//     receipt wording) is deliberately still null. Those need a Lao speaker
+//     to write them; they are listed in LAO_TODO below so nothing is hidden.
+//   * Question stems, option labels and marking text are NOT here. They live
+//     in the Question Bank and are governed by translation_status=APPROVED.
 const UI_STRINGS = {
   en: {
     langLabel: 'English', otherLangLabel: 'ລາວ',
+
+    // ---- navigation and buttons
+    previous: 'Previous', next: 'Next', review: 'Review Answers',
+    submit: 'Submit Assessment', back: 'Back', edit: 'Edit',
+    startAssessment: 'Start Assessment', starting: 'Starting…',
+    switching: 'Switching…', saving: 'Saving…',
+
+    // ---- question screen
     questionOf: (i, n) => `Question ${i} of ${n}`,
     writtenResponse: 'Written response',
     autosave: 'Answer autosaves as you type.',
-    previous: 'Previous', next: 'Next', review: 'Review Answers',
-    submit: 'Submit Assessment', back: 'Back', edit: 'Edit',
-    switching: 'Switching…',
-    laoUnavailable: 'Lao translation not available for this question. The English version is shown below.',
+    essayPlaceholder: 'Write your answer here...',
+
+    // ---- flags
     flag: 'Flag for review', unflag: 'Remove flag',
     flagged: 'Flagged for review', notFlagged: 'Not flagged',
     flagging: 'Saving…',
     flagHint: 'Flagging is just a bookmark for you. It does not change your answer, your time or your marks.',
     flaggedCount: (n) => `${n} flagged for review`,
+    reviewColumn: 'Review',
+
+    // ---- instructions / verification
+    candidateAssessment: 'Candidate Assessment',
+    candidateLabel: 'Candidate', positionLabel: 'Position',
+    questionsLabel: 'Questions', durationLabel: 'Duration', minutesLabel: 'minutes',
+    rule1: 'Answer all questions carefully.',
+    rule2: 'Your answers are automatically saved.',
+    rule3: 'Do not close the browser during the assessment.',
+    rule4: 'You may use a mobile phone or computer.',
+    rule5: 'Once submitted, the assessment cannot be changed.',
+    confirmIdentity: 'Confirm your identity',
+    candidateIdLabel: 'Candidate ID', phoneLabel: 'Phone number', dobLabel: 'Date of birth',
+    acknowledge: 'I understand the assessment instructions.',
+
+    // ---- review screen
+    reviewTitle: 'Review your answers',
+    answeredLabel: 'Answered', unansweredLabel: 'Unanswered',
+    unansweredWarning: (n) => `You have ${n} unanswered question(s).`,
+    canGoBack: 'You can go back before submitting.',
+    flaggedShownBelow: 'Flagged questions are shown below so you can come back to them.',
+    submitConfirm: 'Submit your assessment? You will not be able to change your answers afterwards.',
+
+    // ---- loading and link errors
+    loading: 'Loading your assessment…',
+    invalidLink: 'Invalid link',
+    noToken: 'No assessment token was found in this URL.',
+    linkUnavailable: 'Assessment link unavailable',
+
+    // ---- paused
+    pausedTitle: 'Assessment paused',
+    pausedByAdmin: 'An administrator has paused your assessment.',
+    pausedSafe: 'Your answers are saved and your remaining time is frozen. Please wait — this page will continue automatically.',
+    pausedRemaining: (m, sec) => `Time remaining when paused: ${m}m ${sec}s — it is frozen and will not run down.`,
+
+    // ---- terminated
+    endedTitle: 'Assessment ended',
+    endedByAdmin: 'This assessment was ended by an administrator. The answers you had saved have been submitted.',
+    endedContact: 'Please speak to the recruitment team if you have any questions.',
+    endedAt: 'Ended',
+
+    // ---- time expired
+    timeExpiredTitle: 'TIME EXPIRED',
+    timeEnded: 'Your assessment time has ended.',
+    autoSubmittedMsg: 'Your saved answers have been submitted automatically.',
+    thanks: 'Thank you.',
+    answeredUnanswered: (a, u) => `${a} answered · ${u} unanswered`,
+
+    // ---- submitted + printable receipt
+    submittedTitle: 'Assessment submitted',
+    submittedThanks: 'Thank you for completing the LALCO recruitment assessment. Our HR team will contact you regarding the next steps, including your interview.',
+    submittedAtLabel: 'Submitted',
+    receiptTitle: 'Assessment submission confirmation',
+    receiptCandidate: 'Candidate', receiptId: 'LALCO ID',
+    receiptAssessment: 'Assessment', receiptStatus: 'Status',
+    receiptStatusValue: 'Submitted — awaiting marking',
+    receiptNoResults: 'Your results are not shown here. LALCO HR will contact you about the outcome.',
+    printConfirmation: 'Print confirmation',
+
+    // ---- fallback notice for a question with no approved Lao
+    laoUnavailable: 'Lao translation not available for this question. The English version is shown below.',
+    laoUnavailableTitle: 'ບໍ່ມີການແປພາສາລາວ',
   },
+
   lo: {
-    // Filled in by the LALCO team. Anything left blank falls back to English —
-    // nothing here is machine-translated.
     langLabel: 'ລາວ', otherLangLabel: 'English',
-    questionOf: null, writtenResponse: null, autosave: null,
-    previous: null, next: null, review: null,
-    submit: null, back: null, edit: null, switching: null,
-    laoUnavailable: null,
-    flag: null, unflag: null, flagged: null, notFlagged: null,
-    flagging: null, flagHint: null, flaggedCount: null,
+
+    // ---- navigation and buttons (supplied, pending native sign-off)
+    previous: 'ກັບຄືນ',
+    next: 'ຕໍ່ໄປ',
+    review: 'ກວດຄືນຄຳຕອບ',
+    submit: 'ສົ່ງແບບປະເມີນ',
+    back: 'ກັບຄືນ',
+    edit: 'ແກ້ໄຂ',
+    startAssessment: 'ເລີ່ມການປະເມີນ',
+    starting: 'ກຳລັງເລີ່ມ…',
+    switching: 'ກຳລັງປ່ຽນ…',
+    saving: 'ກຳລັງບັນທຶກ…',
+
+    // ---- question screen
+    questionOf: null,                       // LAO_TODO: needs Lao number phrasing
+    writtenResponse: 'ຄຳຕອບແບບຂຽນ',
+    autosave: null,                         // LAO_TODO: sentence
+    essayPlaceholder: null,                 // LAO_TODO: sentence
+
+    // ---- flags (supplied, pending native sign-off)
+    flag: 'ໝາຍໄວ້ເພື່ອກວດຄືນ',
+    unflag: 'ເອົາເຄື່ອງໝາຍອອກ',
+    flagged: 'ໝາຍໄວ້ແລ້ວ',
+    notFlagged: 'ຍັງບໍ່ໄດ້ໝາຍ',
+    flagging: 'ກຳລັງບັນທຶກ…',
+    flagHint: null,                         // LAO_TODO: sentence
+    flaggedCount: null,                     // LAO_TODO: needs Lao number phrasing
+    reviewColumn: 'ກວດຄືນ',
+
+    // ---- instructions / verification
+    candidateAssessment: null,              // LAO_TODO
+    candidateLabel: 'ຜູ້ສະໝັກ',
+    positionLabel: 'ຕຳແໜ່ງ',
+    questionsLabel: 'ຄຳຖາມ',
+    durationLabel: 'ໄລຍະເວລາ',
+    minutesLabel: 'ນາທີ',
+    rule1: null, rule2: null, rule3: null, rule4: null, rule5: null,   // LAO_TODO: sentences
+    confirmIdentity: null,                  // LAO_TODO
+    candidateIdLabel: null, phoneLabel: null, dobLabel: null,          // LAO_TODO
+    acknowledge: null,                      // LAO_TODO: sentence
+
+    // ---- review screen
+    reviewTitle: null,                      // LAO_TODO
+    answeredLabel: 'ຕອບແລ້ວ',
+    unansweredLabel: 'ຍັງບໍ່ໄດ້ຕອບ',
+    unansweredWarning: null,                // LAO_TODO: sentence
+    canGoBack: null,                        // LAO_TODO: sentence
+    flaggedShownBelow: null,                // LAO_TODO: sentence
+    submitConfirm: null,                    // LAO_TODO: sentence
+
+    // ---- loading and link errors
+    loading: null, invalidLink: null, noToken: null, linkUnavailable: null,  // LAO_TODO
+
+    // ---- paused / ended / expired  (all LAO_TODO: sentences)
+    pausedTitle: null, pausedByAdmin: null, pausedSafe: null, pausedRemaining: null,
+    endedTitle: null, endedByAdmin: null, endedContact: null, endedAt: null,
+    timeExpiredTitle: null, timeEnded: null, autoSubmittedMsg: null,
+    thanks: null, answeredUnanswered: null,
+
+    // ---- submitted + receipt
+    submittedTitle: null,                   // LAO_TODO
+    submittedThanks: null,                  // LAO_TODO: sentence
+    submittedAtLabel: 'ສົ່ງແລ້ວ',
+    receiptTitle: null,                     // LAO_TODO
+    receiptCandidate: 'ຜູ້ສະໝັກ',
+    receiptId: null,                        // LAO_TODO: keep "LALCO ID" as a proper noun?
+    receiptAssessment: 'ແບບປະເມີນ',
+    receiptStatus: 'ສະຖານະ',
+    receiptStatusValue: null,               // LAO_TODO: sentence
+    receiptNoResults: null,                 // LAO_TODO: sentence
+    printConfirmation: 'ພິມໃບຢືນຢັນ',
+
+    laoUnavailable: null,                   // LAO_TODO: sentence
+    laoUnavailableTitle: 'ບໍ່ມີການແປພາສາລາວ',
   },
 };
 
@@ -126,8 +277,8 @@ function wireLanguageToggle(onSwitched) {
 }
 
 async function boot() {
-  if (!TOKEN) { shell(`<div style="text-align:center;padding-top:60px;"><h2>Invalid link</h2><p class="muted">No assessment token was found in this URL.</p></div>`); return; }
-  shell('<p class="muted">Loading your assessment…</p>');
+  if (!TOKEN) { shell(`<div style="text-align:center;padding-top:60px;"><h2>${esc(t('invalidLink'))}</h2><p class="muted">${esc(t('noToken'))}</p></div>`); return; }
+  shell(`<p class="muted">${esc(t('loading'))}</p>`);
   try {
     const info = await exam('');
     STATE.candidateName = info.candidateName || null;
@@ -148,7 +299,7 @@ async function boot() {
     // normal path for a candidate who reopens the link after time ran out.
     if (e.data && e.data.autoSubmitted) return renderTimeExpired(e.data);
     if (e.status === 423 || (e.data && e.data.paused)) return renderPaused(e.data || {});
-    shell(`<div style="text-align:center;padding-top:60px;"><h2>Assessment link unavailable</h2><p class="muted">${esc(e.data && e.data.error || e.message)}</p></div>`);
+    shell(`<div style="text-align:center;padding-top:60px;"><h2>${esc(t('linkUnavailable'))}</h2><p class="muted">${esc(e.data && e.data.error || e.message)}</p></div>`);
   }
 }
 
@@ -156,29 +307,29 @@ function renderInstructions(info) {
   STATE.step = 'instructions'; // no session yet: the language choice is local
   const v = info.verification;
   shell(`
-    <h2 style="margin-bottom:6px;">Candidate Assessment</h2>
-    <p class="faint" style="margin-bottom:16px;">Candidate: <b>${esc(info.candidateName)}</b> · Position: <b>${esc(info.position || '—')}</b></p>
+    <h2 style="margin-bottom:6px;">${esc(t('candidateAssessment'))}</h2>
+    <p class="faint" style="margin-bottom:16px;">${esc(t('candidateLabel'))}: <b>${esc(info.candidateName)}</b> · ${esc(t('positionLabel'))}: <b>${esc(info.position || '—')}</b></p>
     <div class="card">
       <div class="section-title">${esc(info.assessmentName)}</div>
-      <p style="font-size:13px;">Questions: <b>${info.questionCount}</b> · Duration: <b>${info.durationMinutes} minutes</b></p>
+      <p style="font-size:13px;">${esc(t('questionsLabel'))}: <b>${info.questionCount}</b> · ${esc(t('durationLabel'))}: <b>${info.durationMinutes} ${esc(t('minutesLabel'))}</b></p>
       <ul style="padding-left:18px;font-size:13.5px;line-height:1.7;">
-        <li>Answer all questions carefully.</li>
-        <li>Your answers are automatically saved.</li>
-        <li>Do not close the browser during the assessment.</li>
-        <li>You may use a mobile phone or computer.</li>
-        <li>Once submitted, the assessment cannot be changed.</li>
+        <li>${esc(t('rule1'))}</li>
+        <li>${esc(t('rule2'))}</li>
+        <li>${esc(t('rule3'))}</li>
+        <li>${esc(t('rule4'))}</li>
+        <li>${esc(t('rule5'))}</li>
       </ul>
     </div>
-    ${(v.requireCandidateId || v.requirePhone || v.requireDob) ? `<div class="card" style="margin-top:14px;"><div class="section-title">Confirm your identity</div>
-      ${v.requireCandidateId ? `<div class="field"><label class="field-label">Candidate ID</label><input id="vCode" placeholder="LALCO-2026-00021"></div>` : ''}
-      ${v.requirePhone ? `<div class="field"><label class="field-label">Phone number</label><input id="vPhone"></div>` : ''}
-      ${v.requireDob ? `<div class="field"><label class="field-label">Date of birth</label><input type="date" id="vDob"></div>` : ''}
+    ${(v.requireCandidateId || v.requirePhone || v.requireDob) ? `<div class="card" style="margin-top:14px;"><div class="section-title">${esc(t('confirmIdentity'))}</div>
+      ${v.requireCandidateId ? `<div class="field"><label class="field-label">${esc(t('candidateIdLabel'))}</label><input id="vCode" placeholder="LALCO-2026-00021"></div>` : ''}
+      ${v.requirePhone ? `<div class="field"><label class="field-label">${esc(t('phoneLabel'))}</label><input id="vPhone"></div>` : ''}
+      ${v.requireDob ? `<div class="field"><label class="field-label">${esc(t('dobLabel'))}</label><input type="date" id="vDob"></div>` : ''}
     </div>` : ''}
     <label style="display:flex;gap:10px;align-items:flex-start;margin:16px 0;font-size:13.5px;">
-      <input type="checkbox" id="ack" style="width:18px;height:18px;margin-top:2px;"> <span>I understand the assessment instructions.</span>
+      <input type="checkbox" id="ack" style="width:18px;height:18px;margin-top:2px;"> <span>${esc(t('acknowledge'))}</span>
     </label>
     <p class="faint" id="startErr" style="color:var(--danger);"></p>
-  `, { nav: `<div class="pnav"><button class="btn btn-primary" id="startBtn" disabled>Start Assessment</button></div>` });
+  `, { nav: `<div class="pnav"><button class="btn btn-primary" id="startBtn" disabled>${esc(t('startAssessment'))}</button></div>` });
   $('#ack').onchange = (e) => { $('#startBtn').disabled = !e.target.checked; };
   // Before the assessment exists there is no session to persist to, so the
   // choice is held client-side and sent with /start.
@@ -187,7 +338,7 @@ function renderInstructions(info) {
     // Already guarded: disabling here means a second tap is a no-op, so a
     // double tap cannot create two sessions.
     if ($('#startBtn').disabled) return;
-    $('#startBtn').disabled = true; $('#startBtn').textContent = 'Starting…';
+    $('#startBtn').disabled = true; $('#startBtn').textContent = t('starting');
     try {
       const body = { language: STATE.language };
       if (v.requireCandidateId) body.candidateCode = $('#vCode').value;
@@ -195,11 +346,15 @@ function renderInstructions(info) {
       if (v.requireDob) body.dob = $('#vDob').value;
       const res = await exam('/start', { method: 'POST', body: JSON.stringify(body) });
       STATE.expiresAt = res.expiresAt;
+      // Keep what the server confirmed, so the submission receipt can identify
+      // the candidate even if they never reload the page.
+      if (res.candidateCode) STATE.candidateCode = res.candidateCode;
+      if (res.assessmentName) STATE.assessmentName = res.assessmentName;
       const qinfo = await exam('/questions');
       renderQuestionFlow({ questions: qinfo.questions });
     } catch (e) {
       $('#startErr').textContent = (e.data && e.data.error) || 'Could not start the assessment.';
-      $('#startBtn').disabled = false; $('#startBtn').textContent = 'Start Assessment';
+      $('#startBtn').disabled = false; $('#startBtn').textContent = t('startAssessment');
     }
   };
 }
@@ -251,7 +406,7 @@ async function showQuestion() {
   if (isEssay) {
     body = `${laoBannerHTML(q)}<div class="faint" style="margin-bottom:6px;">${t('questionOf', STATE.idx + 1, total)} — ${t('writtenResponse')}</div>
       <p style="font-size:14.5px;margin-bottom:14px;">${esc(q.text)}</p>
-      <textarea id="ans" style="min-height:220px;" placeholder="Write your answer here...">${savedAnswer ? esc(savedAnswer.text) : ''}</textarea>
+      <textarea id="ans" style="min-height:220px;" placeholder="${esc(t('essayPlaceholder'))}">${savedAnswer ? esc(savedAnswer.text) : ''}</textarea>
       <div class="faint" style="margin-top:6px;">${t('autosave')}</div>
       ${flagControlHTML(STATE.flagged.has(q.id))}`;
   } else {
@@ -270,7 +425,7 @@ async function showQuestion() {
   }
   shell(body, {
     timer: true, progress: Math.round((STATE.idx / total) * 100), stepLabel: `Question ${STATE.idx + 1} of ${total}`,
-    nav: `<div class="pnav">${STATE.idx > 0 ? `<button class="btn" id="prevBtn">${t('previous')}</button>` : ''}<button class="btn btn-primary" id="nextBtn">${STATE.idx === total - 1 ? t('review') : t('next')}</button></div>`,
+    nav: `<div class="pnav">${STATE.idx > 0 ? `<button class="btn" id="prevBtn">${t('previous')}</button>` : ''}<button class="btn btn-primary" id="nextBtn">${esc(STATE.idx === total - 1 ? t('review') : t('next'))}</button></div>`,
   });
   startTimer();
 
@@ -316,7 +471,7 @@ async function showQuestion() {
     navigating = true;
     const btn = delta > 0 ? $('#nextBtn') : $('#prevBtn');
     const label = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    if (btn) { btn.disabled = true; btn.textContent = t('saving'); }
     try {
       await saveAnswer();
       if (delta > 0 && STATE.idx === total - 1) { STATE.step = 'review'; persistLocalProgress(); showReview(); return; }
@@ -401,7 +556,7 @@ function wireFlagButton(questionId) {
 function laoBannerHTML(q) {
   if (!q || !q.laoUnavailable) return '';
   return `<div class="card" style="background:var(--warning-bg);border:1px solid var(--gold);margin-bottom:12px;padding:10px 12px;">
-    <b>ບໍ່ມີການແປພາສາລາວ</b><div class="faint" style="margin-top:4px;">${esc(t('laoUnavailable'))}</div></div>`;
+    <b>${esc(t('laoUnavailableTitle'))}</b><div class="faint" style="margin-top:4px;">${esc(t('laoUnavailable'))}</div></div>`;
 }
 
 async function showReview() {
@@ -412,21 +567,21 @@ async function showReview() {
   const unanswered = total - answered.length;
   const flaggedCount = STATE.flagged.size;
   shell(`
-    <h2 style="margin-bottom:12px;">Review your answers</h2>
+    <h2 style="margin-bottom:12px;">${esc(t('reviewTitle'))}</h2>
     <div class="grid grid-2" style="margin-bottom:16px;">
-      <div class="kpi"><div class="num">${answered.length}</div><div class="lbl">Answered</div></div>
-      <div class="kpi"><div class="num">${unanswered}</div><div class="lbl">Unanswered</div></div>
+      <div class="kpi"><div class="num">${answered.length}</div><div class="lbl">${esc(t('answeredLabel'))}</div></div>
+      <div class="kpi"><div class="num">${unanswered}</div><div class="lbl">${esc(t('unansweredLabel'))}</div></div>
     </div>
-    ${unanswered ? `<div class="card" style="background:var(--warning-bg);"><b>You have ${unanswered} unanswered question(s).</b> You can go back before submitting.</div>` : ''}
-    ${flaggedCount ? `<div class="card" style="background:var(--warning-bg);"><b>${esc(t('flaggedCount', flaggedCount))}.</b> Flagged questions are shown below so you can come back to them.</div>` : ''}
-    <div class="table-wrap" style="margin-top:14px;"><table><thead><tr><th>#</th><th>Status</th><th>Review</th><th></th></tr></thead>
-    <tbody>${STATE.questions.map((qq, i) => `<tr><td>${i + 1}</td><td>${answered.includes(qq.id) ? '<span class="badge badge-success">Answered</span>' : '<span class="badge badge-warning">Unanswered</span>'}</td><td>${STATE.flagged.has(qq.id) ? `<span class="badge badge-warning">\u2691 ${esc(t('flagged'))}</span>` : '<span class="faint">\u2014</span>'}</td><td><button class="btn btn-sm" data-i="${i}">Edit</button></td></tr>`).join('')}</tbody></table></div>
-  `, { timer: true, nav: `<div class="pnav"><button class="btn" id="backBtn">Back</button><button class="btn btn-gold" id="submitBtn">Submit Assessment</button></div>` });
+    ${unanswered ? `<div class="card" style="background:var(--warning-bg);"><b>${esc(t('unansweredWarning', unanswered))}</b> ${esc(t('canGoBack'))}</div>` : ''}
+    ${flaggedCount ? `<div class="card" style="background:var(--warning-bg);"><b>${esc(t('flaggedCount', flaggedCount))}.</b> ${esc(t('flaggedShownBelow'))}</div>` : ''}
+    <div class="table-wrap" style="margin-top:14px;"><table><thead><tr><th>#</th><th>${esc(t('answeredLabel'))}</th><th>${esc(t('reviewColumn'))}</th><th></th></tr></thead>
+    <tbody>${STATE.questions.map((qq, i) => `<tr><td>${i + 1}</td><td>${answered.includes(qq.id) ? `<span class="badge badge-success">${esc(t('answeredLabel'))}</span>` : `<span class="badge badge-warning">${esc(t('unansweredLabel'))}</span>`}</td><td>${STATE.flagged.has(qq.id) ? `<span class="badge badge-warning">\u2691 ${esc(t('flagged'))}</span>` : '<span class="faint">\u2014</span>'}</td><td><button class="btn btn-sm" data-i="${i}">${esc(t('edit'))}</button></td></tr>`).join('')}</tbody></table></div>
+  `, { timer: true, nav: `<div class="pnav"><button class="btn" id="backBtn">${esc(t('back'))}</button><button class="btn btn-gold" id="submitBtn">${esc(t('submit'))}</button></div>` });
   startTimer();
   $$('button[data-i]').forEach((b) => (b.onclick = () => { STATE.idx = Number(b.dataset.i); STATE.step = 'question'; showQuestion(); }));
   $('#backBtn').onclick = () => { STATE.idx = STATE.questions.length - 1; STATE.step = 'question'; showQuestion(); };
   $('#submitBtn').onclick = () => {
-    if (!confirm('Submit your assessment? You will not be able to change your answers afterwards.')) return;
+    if (!confirm(t('submitConfirm'))) return;
     doSubmit();
   };
 }
@@ -484,13 +639,13 @@ function renderPaused(info) {
   clearInterval(STATE.timerInterval);
   STATE.step = 'paused';
   const left = info.remainingSeconds != null
-    ? `<p class="faint" style="margin-top:10px;">Time remaining when paused: ${Math.floor(info.remainingSeconds / 60)}m ${info.remainingSeconds % 60}s — it is frozen and will not run down.</p>`
+    ? `<p class="faint" style="margin-top:10px;">${esc(t('pausedRemaining', Math.floor(info.remainingSeconds / 60), info.remainingSeconds % 60))}</p>`
     : '';
   shell(`<div style="text-align:center;padding-top:30px;">
     <div style="font-size:44px;margin-bottom:10px;">⏸</div>
-    <h2>Assessment paused</h2>
-    <p class="muted" style="margin-top:8px;">An administrator has paused your assessment.</p>
-    <p class="muted" style="margin-top:6px;">Your answers are saved and your remaining time is frozen. Please wait — this page will continue automatically.</p>
+    <h2>${esc(t('pausedTitle'))}</h2>
+    <p class="muted" style="margin-top:8px;">${esc(t('pausedByAdmin'))}</p>
+    <p class="muted" style="margin-top:6px;">${esc(t('pausedSafe'))}</p>
     ${left}
   </div>`);
   // Poll gently until an administrator resumes it.
@@ -503,10 +658,10 @@ function renderTerminated(info) {
   STATE.step = 'done';
   shell(`<div style="text-align:center;padding-top:30px;">
     <div style="font-size:44px;margin-bottom:10px;">■</div>
-    <h2>Assessment ended</h2>
-    <p class="muted" style="margin-top:8px;">This assessment was ended by an administrator. The answers you had saved have been submitted.</p>
-    <p class="muted" style="margin-top:6px;">Please speak to the recruitment team if you have any questions.</p>
-    <p class="faint" style="margin-top:14px;">${info && info.submittedAt ? 'Ended ' + new Date(info.submittedAt).toLocaleString() : ''}</p>
+    <h2>${esc(t('endedTitle'))}</h2>
+    <p class="muted" style="margin-top:8px;">${esc(t('endedByAdmin'))}</p>
+    <p class="muted" style="margin-top:6px;">${esc(t('endedContact'))}</p>
+    <p class="faint" style="margin-top:14px;">${info && info.submittedAt ? esc(t('endedAt')) + ' ' + new Date(info.submittedAt).toLocaleString() : ''}</p>
   </div>`);
 }
 
@@ -515,16 +670,16 @@ function renderTimeExpired(info) {
   clearInterval(STATE.timerInterval);
   STATE.step = 'done';
   const counts = (info.answered != null && info.unanswered != null)
-    ? `<p class="faint" style="margin-top:10px;">${info.answered} answered · ${info.unanswered} unanswered</p>`
+    ? `<p class="faint" style="margin-top:10px;">${esc(t('answeredUnanswered', info.answered, info.unanswered))}</p>`
     : '';
   shell(`<div style="text-align:center;padding-top:30px;">
     <div style="font-size:44px;margin-bottom:10px;">⏱</div>
-    <h2>TIME EXPIRED</h2>
-    <p class="muted" style="margin-top:8px;">Your assessment time has ended.</p>
-    <p class="muted" style="margin-top:6px;">Your saved answers have been submitted automatically.</p>
-    <p class="muted" style="margin-top:6px;">Thank you.</p>
+    <h2>${esc(t('timeExpiredTitle'))}</h2>
+    <p class="muted" style="margin-top:8px;">${esc(t('timeEnded'))}</p>
+    <p class="muted" style="margin-top:6px;">${esc(t('autoSubmittedMsg'))}</p>
+    <p class="muted" style="margin-top:6px;">${esc(t('thanks'))}</p>
     ${counts}
-    <p class="faint" style="margin-top:14px;">${info.submittedAt ? 'Submitted ' + new Date(info.submittedAt).toLocaleString() : ''}</p>
+    <p class="faint" style="margin-top:14px;">${info.submittedAt ? esc(t('submittedAtLabel')) + ' ' + new Date(info.submittedAt).toLocaleString() : ''}</p>
   </div>`);
 }
 
@@ -536,22 +691,22 @@ function renderDone(submittedAt) {
   clearInterval(STATE.timerInterval);
   shell(`<div style="text-align:center;padding-top:30px;">
     <div style="font-size:44px;margin-bottom:10px;">✓</div>
-    <h2>Assessment submitted</h2>
-    <p class="muted" style="margin-top:8px;">Thank you for completing the LALCO recruitment assessment. Our HR team will contact you regarding the next steps, including your interview.</p>
+    <h2>${esc(t('submittedTitle'))}</h2>
+    <p class="muted" style="margin-top:8px;">${esc(t('submittedThanks'))}</p>
   </div>
   <div class="receipt" id="receipt">
-    <div class="receipthead"><b>LALCO</b> — Assessment submission confirmation</div>
+    <div class="receipthead"><b>LALCO</b> — ${esc(t('receiptTitle'))}</div>
     <table class="receiptkv">
-      <tr><th>Candidate</th><td>${esc(STATE.candidateName || '')}</td></tr>
-      ${STATE.candidateCode ? `<tr><th>LALCO ID</th><td>${esc(STATE.candidateCode)}</td></tr>` : ''}
-      <tr><th>Assessment</th><td>${esc(STATE.assessmentName || 'LALCO Recruitment Assessment')}</td></tr>
-      <tr><th>Submitted</th><td>${esc(submittedAt ? new Date(submittedAt).toLocaleString() : '')}</td></tr>
-      <tr><th>Status</th><td>Submitted — awaiting marking</td></tr>
+      <tr><th>${esc(t('receiptCandidate'))}</th><td>${esc(STATE.candidateName || '')}</td></tr>
+      ${STATE.candidateCode ? `<tr><th>${esc(t('receiptId'))}</th><td>${esc(STATE.candidateCode)}</td></tr>` : ''}
+      <tr><th>${esc(t('receiptAssessment'))}</th><td>${esc(STATE.assessmentName || 'LALCO Recruitment Assessment')}</td></tr>
+      <tr><th>${esc(t('submittedAtLabel'))}</th><td>${esc(submittedAt ? new Date(submittedAt).toLocaleString() : '')}</td></tr>
+      <tr><th>${esc(t('receiptStatus'))}</th><td>${esc(t('receiptStatusValue'))}</td></tr>
     </table>
-    <p class="faint" style="font-size:11px;margin:10px 0 0;">Your results are not shown here. LALCO HR will contact you about the outcome.</p>
+    <p class="faint" style="font-size:11px;margin:10px 0 0;">${esc(t('receiptNoResults'))}</p>
   </div>
   <div style="text-align:center;margin-top:16px;" class="no-print">
-    <button class="btn" id="printReceipt">Print confirmation</button>
+    <button class="btn" id="printReceipt">${esc(t('printConfirmation'))}</button>
   </div>`, { language: false });
   const p = $('#printReceipt');
   if (p) p.onclick = () => window.print();

@@ -120,6 +120,22 @@ app.get('/', (req, res) => res.redirect('/admin'));
 app.use((req, res) => res.status(404).json({ error: 'Not found.' }));
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
+  // A body that is not valid JSON is a CLIENT error, not a server fault. A
+  // flaky mobile connection truncating an autosave used to surface as a 500,
+  // which reads as "the assessment platform broke" to a candidate and hides
+  // real faults in the logs. express.json() throws a SyntaxError carrying the
+  // request body; it is matched narrowly so genuine faults still return 500.
+  if (err && err.type === 'entity.parse.failed') {
+    // Deliberately terse: never echo the offending body back, and never
+    // include the parser's message, which quotes the input.
+    console.warn('[http] malformed JSON body on ' + req.method + ' ' + req.path);
+    return res.status(400).json({ error: 'Invalid JSON request body.' });
+  }
+  // A body larger than the configured limit is also the client's doing.
+  if (err && err.type === 'entity.too.large') {
+    console.warn('[http] oversized body on ' + req.method + ' ' + req.path);
+    return res.status(413).json({ error: 'Request body is too large.' });
+  }
   console.error(err);
   res.status(500).json({ error: 'Internal server error.' });
 });

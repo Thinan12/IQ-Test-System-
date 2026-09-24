@@ -219,4 +219,50 @@ expect_contains "HSTS header is sent in production" 'max-age=31536000' "$HSTS"
 expect_eq "a proxied HTTPS request is served normally" 401 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' "$BASE/api/admin/candidates")"
 stop_server
 
+# ===========================================================================
+# A malformed request body is the CLIENT's mistake. It used to surface as a
+# 500 "Internal server error", which reads to a candidate as "the assessment
+# platform broke" and buries genuine faults in the logs.
+start_server 4113
+c_head "MALFORMED REQUEST BODIES ARE CLIENT ERRORS, NOT SERVER FAULTS"
+
+JSUPER=$(login_token superadmin@lalco.demo "$DEMO_PASSWORD")
+read -r JC JCODE <<< "$(new_candidate "$JSUPER" "Malformed JSON Candidate")"
+JTOKEN=$(new_link "$JSUPER" "$JC")
+http_body POST "$BASE/api/exam/$JTOKEN/start" '' "{\"candidateCode\":\"$JCODE\"}" > /dev/null
+JQ=$(jsonval "$(http_body GET "$BASE/api/exam/$JTOKEN/questions")" 'd.questions[0].id')
+
+bad_json() { # bad_json <method> <url> <raw body>
+  printf '%s' "$3" > "$TEST_DIR/bad.json"
+  curl -s -o /dev/null -w '%{http_code}' -X "$1" "$2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/bad.json"
+}
+bad_json_body() {
+  printf '%s' "$3" > "$TEST_DIR/bad.json"
+  curl -s -X "$1" "$2" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/bad.json"
+}
+
+expect_eq "malformed JSON on the answer route is 400, not 500" 400   "$(bad_json POST "$BASE/api/exam/$JTOKEN/answer" '{\"questionId\":\"x\"}')"
+expect_eq "truncated JSON is 400" 400 "$(bad_json POST "$BASE/api/exam/$JTOKEN/answer" '{"questionId":')"
+expect_eq "a bare string body is 400" 400 "$(bad_json POST "$BASE/api/exam/$JTOKEN/answer" 'not json at all')"
+expect_eq "malformed JSON on the flag route is 400" 400   "$(bad_json POST "$BASE/api/exam/$JTOKEN/flag" '{oops}')"
+expect_eq "malformed JSON on the language route is 400" 400   "$(bad_json POST "$BASE/api/exam/$JTOKEN/language" '{oops}')"
+expect_eq "malformed JSON on the admin login route is 400" 400   "$(bad_json POST "$BASE/api/admin/auth/login" '{oops}')"
+
+BADRES=$(bad_json_body POST "$BASE/api/exam/$JTOKEN/answer" '{oops}')
+expect_contains "the message is safe and human" 'Invalid JSON request body.' "$BADRES"
+expect_not_contains "no stack trace is returned" 'at ' "$BADRES"
+expect_not_contains "no file path is returned" 'node_modules' "$BADRES"
+expect_not_contains "the offending body is not echoed back" 'oops' "$BADRES"
+expect_not_contains "no JSON parser internals leak" 'SyntaxError' "$BADRES"
+expect_not_contains "no secret leaks in the error" "$DEMO_PASSWORD" "$BADRES"
+
+# The server must be unharmed and valid requests must behave exactly as before.
+expect_eq "the server is still healthy afterwards" 200 "$(http_code GET "$BASE/api/health")"
+expect_eq "a VALID answer still saves normally" 200   "$(http_code POST "$BASE/api/exam/$JTOKEN/answer" '' "{\"questionId\":\"$JQ\",\"answer\":{\"monthlyInterest\":3000},\"timeSpentDeltaSeconds\":5}")"
+expect_eq "and the valid answer really was stored" 1   "$(dbq "SELECT COUNT(*) AS v FROM candidate_answers WHERE session_id = (SELECT id FROM assessment_sessions WHERE candidate_id='$JC') AND answer_json IS NOT NULL")"
+expect_eq "the malformed attempts stored nothing" 1   "$(dbq "SELECT COUNT(*) AS v FROM candidate_answers WHERE session_id = (SELECT id FROM assessment_sessions WHERE candidate_id='$JC')")"
+expect_eq "an empty body is still accepted where the route allows it" 200 "$(http_code POST "$BASE/api/exam/$JTOKEN/submit")"
+expect_eq "admin login still works with valid JSON" 200   "$(http_code POST "$BASE/api/admin/auth/login" '' "{\"email\":\"superadmin@lalco.demo\",\"password\":\"$DEMO_PASSWORD\"}")"
+stop_server
+
 summary "SECURITY CHECK (section 18)"

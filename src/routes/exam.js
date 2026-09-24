@@ -101,6 +101,13 @@ router.get('/:token', (req, res) => {
   respondWithCandidateContext(req, res, link, null);
 });
 
+// Name of the assessment a session was sat under, for the candidate receipt.
+function startedAssessmentName(session) {
+  if (!session || !session.assessment_id) return 'LALCO Recruitment Assessment';
+  const a = db.prepare('SELECT name FROM assessments WHERE id = ?').get(session.assessment_id);
+  return a ? a.name : 'LALCO Recruitment Assessment';
+}
+
 function respondWithCandidateContext(req, res, link, session) {
   const c = db.prepare('SELECT * FROM candidates WHERE id = ?').get(link.candidate_id);
   const s = settings();
@@ -170,7 +177,7 @@ router.post('/:token/start', (req, res) => {
         submittedAt: session.submitted_at,
       });
     }
-    return res.json({ started: true, expiresAt: session.expires_at, scheduledEndAt: session.expires_at });
+    return res.json({ started: true, expiresAt: session.expires_at, scheduledEndAt: session.expires_at, candidateCode: c.code, assessmentName: startedAssessmentName(session) });
   }
   const status = liveLinkStatus(link);
   if (status !== 'ACTIVE') return res.status(410).json({ error: 'This assessment invitation has expired.' });
@@ -215,7 +222,13 @@ router.post('/:token/start', (req, res) => {
   db.prepare(`UPDATE assessment_links SET status='USED' WHERE id=?`).run(link.id);
   db.prepare(`UPDATE candidates SET status='ASSESSMENT_STARTED' WHERE id=?`).run(c.id);
   audit({ userName: 'Candidate (public exam)', role: 'CANDIDATE', action: 'Assessment started', target: c.code, ip: req.ip });
-  res.json({ started: true, expiresAt, scheduledEndAt: expiresAt, language: startLanguage });
+  res.json({
+    started: true, expiresAt, scheduledEndAt: expiresAt, language: startLanguage,
+    // Echoed back so the submission receipt can identify the candidate without
+    // needing a page reload to repopulate it.
+    candidateCode: c.code,
+    assessmentName: assessment ? assessment.name : 'LALCO Recruitment Assessment',
+  });
 }
 );
 

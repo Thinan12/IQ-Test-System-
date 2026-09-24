@@ -681,8 +681,15 @@ async function viewPrintCandidate(params, el) {
       </div>
     </div>`;
 
-  $('#doPrint').onclick = () => window.print();
-  $('#backFromPrint').onclick = () => goto('candidates/' + id);
+  // Scoped to `el`, not the document. A view that awaits an API call can have
+  // its container detached by a second navigation landing first; a document-
+  // wide lookup then returns null and throws. Scoping keeps the wiring with
+  // the markup it belongs to, and the guard means a detached render is simply
+  // discarded instead of breaking the page.
+  const printBtn = $('#doPrint', el);
+  if (printBtn) printBtn.onclick = () => window.print();
+  const backBtn = $('#backFromPrint', el);
+  if (backBtn) backBtn.onclick = () => goto('candidates/' + id);
 }
 
 // "0 / 30" and "Not marked" are different facts and must not look alike.

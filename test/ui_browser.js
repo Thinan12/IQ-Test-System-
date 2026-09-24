@@ -733,6 +733,118 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(await dp.locator('#receipt').isVisible(), 'while the confirmation itself prints');
     await doneCtx.close();
 
+    // ------------------------ Lao end to end: sit, submit and print in Lao
+    // The production smoke test could not prove this: that candidate switched
+    // back to English before submitting, so the Lao branch of the receipt and
+    // of the admin print view was never rendered. This exercises it.
+    head('Lao end to end \u2014 sit in Lao, submit in Lao, print in Lao');
+    const laoCtx = await browser.newContext();
+    const lop = await laoCtx.newPage();
+    const laoErrors = [];
+    lop.on('pageerror', (e) => laoErrors.push('pageerror: ' + e.message));
+    lop.on('console', (m) => { if (m.type() === 'error') laoErrors.push(m.text()); });
+
+    // A LOCAL test candidate with a Lao name, on this throwaway server.
+    const laoName = '\u0e97\u0ec9\u0eb2\u0ea7 \u0eaa\u0ebb\u0ea1\u0e8a\u0eb2\u0e8d \u0e9e\u0ebb\u0ea1\u0ea1\u0eb0\u0ea7\u0ebb\u0e87';
+    const laoCand = await page.evaluate(async (nm) => {
+      const r = await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName: nm, applicationType: 'NORMAL', iq: 118, education: 'Bachelor Degree' }) });
+      const l = await api('/candidates/' + r.id + '/links', { method: 'POST' });
+      return { id: r.id, code: r.code, token: l.token };
+    }, laoName);
+    check(!!laoCand.token, 'a Lao-named test candidate and link were created');
+
+    // 1. start the exam in Lao
+    await lop.goto(`${BASE}/exam/${laoCand.token}`, { waitUntil: 'networkidle' });
+    await lop.click('#langSwitch [data-lang="lo"]');
+    await lop.waitForTimeout(700);
+    const instrLao = await lop.locator('.pbody').innerText();
+    check(/[\u0E80-\u0EFF]/.test(instrLao), 'the instructions screen renders Lao before starting');
+    check(instrLao.includes(laoName), 'and shows the Lao candidate name unmangled');
+
+    await lop.fill('#vCode', laoCand.code);
+    await lop.check('#ack');
+    await lop.click('#startBtn');
+    await lop.waitForSelector('#nextBtn', { timeout: 20000 });
+    const laoSession = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ?').get(laoCand.id);
+    check(laoSession && laoSession.language === 'lo', '1. the exam started in Lao', laoSession && laoSession.language);
+
+    // Lao interface chrome really is Lao, not the English fallback.
+    const nextLabel = (await lop.locator('#nextBtn').innerText()).trim();
+    check(/[\u0E80-\u0EFF]/.test(nextLabel), 'the Next button is in Lao', JSON.stringify(nextLabel));
+    const flagLabel = (await lop.locator('#flagBtn').innerText()).trim();
+    check(/[\u0E80-\u0EFF]/.test(flagLabel), 'the Flag control is in Lao', JSON.stringify(flagLabel));
+    const flagState = (await lop.locator('#flagState').innerText()).trim();
+    check(/[\u0E80-\u0EFF]/.test(flagState), 'the flag state text is in Lao', JSON.stringify(flagState));
+
+    // 2. answer at least one question
+    const laoNums = await lop.$$('input[type="number"]');
+    check(laoNums.length > 0, '2. the question renders answer fields in Lao');
+    if (laoNums.length) { await laoNums[0].fill('3000'); await lop.waitForTimeout(1600); }
+    const laoAnswered = one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND answer_json IS NOT NULL', laoSession.id);
+    check(laoAnswered > 0, 'the answer saved while in Lao');
+
+    // 3. remain in Lao all the way to the review screen
+    const laoTotal = db.prepare('SELECT COUNT(*) AS n FROM assessment_questions WHERE assessment_id = ?').get(laoSession.assessment_id).n;
+    for (let i = 0; i < laoTotal + 2; i++) {
+      if (await lop.locator('#submitBtn').count()) break;
+      if (!(await lop.locator('#nextBtn').count())) break;
+      await lop.click('#nextBtn');
+      await lop.waitForTimeout(1200);
+    }
+    check(await lop.locator('#submitBtn').count() > 0, 'the review screen is reachable in Lao');
+    const reviewLao = await lop.locator('.pbody').innerText();
+    check(/[\u0E80-\u0EFF]/.test(reviewLao), '3. the review screen renders Lao');
+    const submitLabel = (await lop.locator('#submitBtn').innerText()).trim();
+    check(/[\u0E80-\u0EFF]/.test(submitLabel), 'the Submit button is in Lao', JSON.stringify(submitLabel));
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', laoSession.id) === 'lo',
+      'the session is still in Lao at the point of submitting');
+
+    // 4. submit while language = lo
+    lop.once('dialog', (d) => d.accept());
+    await lop.click('#submitBtn');
+    await lop.waitForSelector('#receipt', { timeout: 25000 });
+    check(one('SELECT status FROM assessment_sessions WHERE id = ?', laoSession.id) === 'SUBMITTED',
+      '4. the assessment submitted while in Lao');
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', laoSession.id) === 'lo',
+      'and the session language stayed lo');
+
+    // 5-7. the candidate receipt, in Lao
+    const laoReceipt = await lop.locator('#receipt').innerText();
+    check(/[\u0E80-\u0EFF]/.test(laoReceipt), '5-6. the candidate receipt renders Lao Unicode',
+      (laoReceipt.match(/[\u0E80-\u0EFF]+/) || ['none'])[0]);
+    check(laoReceipt.includes(laoName), '7. the receipt carries the Lao candidate name unmangled');
+    check(laoReceipt.includes(laoCand.code), 'and the LALCO ID');
+    check(/LALCO Recruitment Assessment/.test(laoReceipt), 'and the assessment sat');
+    // 8. nothing the candidate must not see
+    check(!/\bPASS\b|\bFAIL\b/.test(laoReceipt), '8. no pass/fail on the candidate receipt');
+    check(!/expected|toleran|rubric/i.test(laoReceipt), 'no answer-key wording on the receipt');
+    check(!laoReceipt.includes(laoSession.id), 'no internal session id on the receipt');
+    check(!laoReceipt.includes(laoCand.id), 'no internal candidate id on the receipt');
+
+    // the receipt prints cleanly in Lao
+    await lop.emulateMedia({ media: 'print' });
+    await lop.waitForTimeout(400);
+    check(await lop.locator('#receipt').isVisible(), 'the Lao receipt survives print media');
+    check(!(await lop.locator('#printReceipt').isVisible()), 'and the print button is hidden on paper');
+    await lop.emulateMedia({ media: 'screen' });
+
+    const realLaoErrors = laoErrors.filter((e) => !/favicon|status of 40[019]/i.test(e));
+    check(realLaoErrors.length === 0, 'no console errors anywhere in the Lao journey', realLaoErrors.slice(0, 2).join(' | '));
+    await laoCtx.close();
+
+    // the ADMIN print view for a candidate who sat in Lao
+    await page.goto(`${BASE}/admin/#/print/${laoCand.id}`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.printdoc', { timeout: 15000 });
+    const laoPrint = await page.locator('.printdoc').innerText();
+    check(/[\u0E80-\u0EFF]/.test(laoPrint), 'the ADMIN print view renders Lao Unicode',
+      (laoPrint.match(/[\u0E80-\u0EFF]+/) || ['none'])[0]);
+    check(laoPrint.includes(laoName), 'the admin printout carries the Lao candidate name unmangled');
+    check(laoPrint.includes(laoCand.code), 'and the LALCO ID');
+    check(/LALCO Recruitment Assessment/.test(laoPrint), 'and the assessment');
+    check(/pass threshold applied/i.test(laoPrint), 'and the pass threshold applied');
+    check(!/toleran/i.test(laoPrint), 'and carries no tolerance');
+    check(!/expected answer/i.test(laoPrint), 'and no expected answer');
+
     // ------------------------------------------------------------- modals
     head('Modals close cleanly');
     await page.click('.sidebar-nav a[data-nav="candidates"]');

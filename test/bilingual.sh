@@ -234,4 +234,19 @@ SHEETS=$(cd "$BACKEND_DIR" && GOOGLE_SYNC_INCLUDE_DEMO=true "$NODE" -e "
 ")
 expect_eq "the reporting workbook still builds with aligned columns" "" "$(jsonval "$SHEETS" 'd.problems.join(",")')"
 
+# ===========================================================================
+c_head "LAO INTERFACE STRINGS — the translation table itself"
+STRINGS=$(cd "$BACKEND_DIR" && "$NODE" "$(native_path "$BACKEND_DIR/test/inspect_lao_strings.js")")
+check "the string table could be inspected" "$([ -n "$STRINGS" ] && echo 0 || echo 1)" "$STRINGS"
+expect_eq "every English key has a Lao counterpart" "" "$(jsonval "$STRINGS" 'd.missingInLo.join(",")')"
+expect_eq "the Lao table invents no keys of its own" "" "$(jsonval "$STRINGS" 'd.extraInLo.join(",")')"
+expect_eq "English is complete — it is the source language" "" "$(jsonval "$STRINGS" 'd.englishEmpty.join(",")')"
+expect_eq "no English text was pasted into the Lao column" "" "$(jsonval "$STRINGS" 'd.copiedFromEnglish.join(",")')"
+expect_eq "every supplied Lao string really contains Lao script" "" "$(jsonval "$STRINGS" 'd.notActuallyLao.join(",")')"
+expect_eq "the two columns are the same size" "$(jsonval "$STRINGS" 'd.enCount')" "$(jsonval "$STRINGS" 'd.loCount')"
+check "Lao interface strings are supplied" "$([ "$(jsonval "$STRINGS" 'd.supplied')" -gt 0 ] && echo 0 || echo 1)"   "supplied=$(jsonval "$STRINGS" 'd.supplied')"
+expect_eq "the three strings confirmed English in production are now Lao" "true"   "$(jsonval "$STRINGS" 'String(d.productionGapsFixed)')"
+printf '  [36mNOTE[0m  Lao supplied: %s | still falling back to English: %s
+'   "$(jsonval "$STRINGS" 'd.supplied')" "$(jsonval "$STRINGS" 'd.pending')"
+
 summary "BILINGUAL QUESTION BANK + LANGUAGE SWITCH"
