@@ -130,6 +130,7 @@ http_body POST "$BASE/api/admin/questions/$QID/archive" "$HR" > /dev/null
 c_head "CANDIDATE — English by default"
 read -r C1 C1CODE <<< "$(new_candidate "$HR" "Bilingual Candidate")"
 T1=$(new_link "$HR" "$C1")
+complete_profile "$T1"
 START=$(public_json POST "$BASE/api/exam/$T1/start" "{\"candidateCode\":\"$C1CODE\"}")
 expect_eq "the session starts in English by default" "en" "$(jsonval "$START" 'd.language')"
 S1=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$C1'")
@@ -220,6 +221,7 @@ expect_eq "the session language is recorded" "lo" "$(dbq "SELECT language AS v F
 c_head "LANGUAGE BEFORE THE EXAM"
 read -r C2 C2CODE <<< "$(new_candidate "$HR" "Lao From Start Candidate")"
 T2=$(new_link "$HR" "$C2")
+complete_profile "$T2"
 START2=$(public_json POST "$BASE/api/exam/$T2/start" "{\"candidateCode\":\"$C2CODE\",\"language\":\"lo\"}")
 expect_eq "a language chosen before starting is honoured" "lo" "$(jsonval "$START2" 'd.language')"
 S2=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$C2'")
@@ -286,6 +288,7 @@ read -r CEN CENCODE <<< "$(new_candidate "$HR" "English Invitation Candidate")"
 TEN=$(new_link "$HR" "$CEN" en)
 INTRO_EN=$(http_body GET "$BASE/api/exam/$TEN")
 expect_eq "the portal is told the invitation language before any session exists" "en" "$(jsonval "$INTRO_EN" 'd.linkLanguage')"
+complete_profile "$TEN"
 START_EN=$(public_json POST "$BASE/api/exam/$TEN/start" "{\"candidateCode\":\"$CENCODE\"}")
 expect_eq "the session starts in English" "en" "$(jsonval "$START_EN" 'd.language')"
 SEN=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$CEN'")
@@ -298,6 +301,7 @@ TLO=$(new_link "$HR" "$CLO" lo)
 INTRO_LO=$(http_body GET "$BASE/api/exam/$TLO")
 expect_eq "the portal is told the invitation is Lao" "lo" "$(jsonval "$INTRO_LO" 'd.linkLanguage')"
 # The candidate sends NO language: that is the whole point of the feature.
+complete_profile "$TLO"
 START_LO=$(public_json POST "$BASE/api/exam/$TLO/start" "{\"candidateCode\":\"$CLOCODE\"}")
 expect_eq "the session starts in Lao without the candidate choosing anything" "lo" "$(jsonval "$START_LO" 'd.language')"
 SLO=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$CLO'")

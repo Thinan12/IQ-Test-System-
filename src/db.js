@@ -73,6 +73,39 @@ ensureColumn('assessments', 'randomize_question_order', 'INTEGER NOT NULL DEFAUL
 ensureColumn('assessments', 'randomize_options', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('assessments', 'selection_rules_json', 'TEXT');
 
+// The candidate's own profile. Additive and nullable: every existing candidate
+// keeps exactly the record it had, with no profile filled in yet. The CHECK on
+// graduate_from lives in schema.sql for fresh databases; on an existing one the
+// route is the authority, as for assessment_links.language.
+ensureColumn('candidates', 'graduate_from', 'TEXT');
+ensureColumn('candidates', 'profile_completed_at', 'TEXT');
+ensureColumn('candidates', 'profile_updated_at', 'TEXT');
+
+// Editable invitation wording per language. NULL keeps the built-in wording,
+// so no existing installation changes behaviour until someone edits it.
+ensureColumn('settings', 'invite_template_en', 'TEXT');
+ensureColumn('settings', 'invite_template_lo', 'TEXT');
+
+// The recruitment decision for one candidate. Created here as well as in
+// schema.sql so an existing database gains it on the next boot.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS recruitment_records (
+    candidate_id TEXT PRIMARY KEY REFERENCES candidates(id) ON DELETE CASCADE,
+    reference_result TEXT,
+    character_note TEXT,
+    interviewer_id TEXT REFERENCES users(id),
+    hr_interview_score INTEGER,
+    chairman_interview_score INTEGER,
+    interview_result TEXT,
+    remark TEXT,
+    final_result TEXT NOT NULL DEFAULT 'PENDING',
+    date_come_to_work TEXT,
+    updated_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
 // The per-attempt question set. Created here as well as in schema.sql so an
 // existing database gains it on the next boot without a migration step.
 db.exec(`

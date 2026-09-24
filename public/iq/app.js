@@ -259,6 +259,28 @@ async function handleTimeUp() {
 }
 
 // ----------------------------------------------------------------- screens
+// The candidate's own details, asked for before anything else. The form is
+// shared with the recruitment assessment portal so both ask the same way.
+function renderProfile(info) {
+  STATE.step = 'profile';
+  window.CandidateProfileForm.reset(info.profile);
+  window.CandidateProfileForm.render({
+    t, esc, shell, api, info,
+    lang: () => STATE.language,
+    languageToggle: (rerender) => wireLanguageToggle(rerender),
+    onSaved: (saved) => {
+      // Carry the stored profile forward so the instructions screen greets them
+      // by the name they just confirmed.
+      const next = Object.assign({}, info, { profile: saved, profileStatus: 'PROFILE_COMPLETED' });
+      if (saved && saved.fullName) {
+        STATE.candidateName = saved.fullName;
+        next.candidateName = saved.fullName;
+      }
+      renderInstructions(next);
+    },
+  });
+}
+
 function renderInstructions(info) {
   STATE.step = 'instructions';
   const v = info.verification || {};
@@ -554,6 +576,7 @@ async function boot() {
       STATE.idx = Math.min(Math.max(0, idx), Math.max(0, STATE.questions.length - 1));
       return renderQuestion();
     }
+    if (info.profileStatus !== 'PROFILE_COMPLETED') return renderProfile(info);
     renderInstructions(info);
   } catch (e) {
     if (e.data && e.data.autoSubmitted) return renderTimeExpired(e.data);

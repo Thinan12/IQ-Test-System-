@@ -4,6 +4,7 @@ const { generateId, generateSecureToken } = require('../../lib/tokens');
 const { evaluateEligibility } = require('../../lib/eligibility');
 const { gradeAllCalc } = require('../../lib/grading');
 const { auditFromReq } = require('../../lib/audit');
+const invitation = require('../../lib/invitation');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { displayStatus } = require('../../lib/finalize');
 const { parseDbDate } = require('../../lib/timeutil');
@@ -343,7 +344,16 @@ router.post('/:id/links', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (
   res.status(201).json({
     id, token, expiresAt, status: 'ACTIVE', language, assessmentType,
     examUrl: `${baseUrl}/${examPath}/${token}`,
-    whatsappMessage: `Dear ${c.full_name},\n\nYou are invited to complete the LALCO ${assessmentType === 'IQ_TEST' ? 'reasoning (IQ) test' : 'recruitment assessment'}.\n\nAssessment link:\n${baseUrl}/${examPath}/${token}\n\nThis invitation link expires in ${s.link_expiry_minutes} minutes. Please complete the assessment within the allocated assessment time once you begin.\n\nThank you.`,
+    // The invitation wording, in the language the administrator chose. It comes
+    // from the editable template, so what the candidate receives is what the
+    // business wrote rather than wording buried in code.
+    invitationMessage: invitation.renderInvitation({
+      language, candidateName: c.full_name, link: `${baseUrl}/${examPath}/${token}`,
+    }),
+    // Kept under its original name so anything already reading it keeps working.
+    whatsappMessage: invitation.renderInvitation({
+      language, candidateName: c.full_name, link: `${baseUrl}/${examPath}/${token}`,
+    }),
   });
 });
 

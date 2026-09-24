@@ -31,7 +31,9 @@ c_head "2. Candidate cannot access another candidate"
 A_INFO=$(http_body GET "$BASE/api/exam/$A_TOKEN")
 expect_contains "A's token shows A's own name" "Sec Test A" "$A_INFO"
 expect_not_contains "A's token does not leak candidate B" "Sec Test B" "$A_INFO"
+complete_profile "$A_TOKEN"
 http_body POST "$BASE/api/exam/$A_TOKEN/start" '' "{\"candidateCode\":\"$A_CODE\"}" > /dev/null
+complete_profile "$B_TOKEN"
 expect_eq "A's code cannot start B's assessment" 401 "$(http_code POST "$BASE/api/exam/$B_TOKEN/start" '' "{\"candidateCode\":\"$A_CODE\"}")"
 expect_eq "candidate cannot read a candidate profile via the admin API" 401 "$(http_code GET "$BASE/api/admin/candidates/$B_ID")"
 
@@ -73,6 +75,7 @@ EXP_TOKEN=$(jsonval "$EXP_LINK" 'd.token')
 expect_eq "the link took the assessment's 1-minute invitation window" 1   "$(dbq "SELECT CAST((julianday(expires_at) - julianday(created_at)) * 24 * 60 + 0.5 AS INTEGER) AS v FROM assessment_links WHERE id = '$(jsonval "$EXP_LINK" 'd.id')'")"
 dbx "UPDATE assessment_links SET expires_at = datetime('now','-1 minute') WHERE id = '$(jsonval "$EXP_LINK" 'd.id')'"
 expect_eq "expired invitation link rejected (410)" 410 "$(http_code GET "$BASE/api/exam/$EXP_TOKEN")"
+complete_profile "$EXP_TOKEN"
 expect_eq "expired link cannot start an assessment (410)" 410 "$(http_code POST "$BASE/api/exam/$EXP_TOKEN/start" '' '{"candidateCode":"x"}')"
 http_body PATCH "$BASE/api/admin/assessments/$EXP_ASMT" "$SUPER" '{"link_expiry_minutes":10}' > /dev/null
 
@@ -229,6 +232,7 @@ c_head "MALFORMED REQUEST BODIES ARE CLIENT ERRORS, NOT SERVER FAULTS"
 JSUPER=$(login_token superadmin@lalco.demo "$DEMO_PASSWORD")
 read -r JC JCODE <<< "$(new_candidate "$JSUPER" "Malformed JSON Candidate")"
 JTOKEN=$(new_link "$JSUPER" "$JC")
+complete_profile "$JTOKEN"
 http_body POST "$BASE/api/exam/$JTOKEN/start" '' "{\"candidateCode\":\"$JCODE\"}" > /dev/null
 JQ=$(jsonval "$(http_body GET "$BASE/api/exam/$JTOKEN/questions")" 'd.questions[0].id')
 

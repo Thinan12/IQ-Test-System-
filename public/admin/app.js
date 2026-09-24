@@ -326,7 +326,7 @@ async function viewCandidateDetail(params, el) {
   el.innerHTML = 'Loading…';
   const d = await api('/candidates/' + id);
   const c = d.candidate;
-  const tabs = [['overview', 'Overview'], ['eligibility', 'Eligibility'], ['assessment', 'Assessment'], ['questions', 'Questions'], ['interview', 'Interview'], ['performance', 'Performance'], ['integrity', 'Integrity'], ['reports', 'Reports'], ['audit', 'Audit']];
+  const tabs = [['overview', 'Overview'], ['recruitment', 'Recruitment report'], ['eligibility', 'Eligibility'], ['assessment', 'Assessment'], ['questions', 'Questions'], ['interview', 'Interview'], ['performance', 'Performance'], ['integrity', 'Integrity'], ['reports', 'Reports'], ['audit', 'Audit']];
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap;">
       <div style="width:52px;height:52px;border-radius:50%;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-size:18px;">${esc(initials(c.full_name))}</div>
@@ -338,11 +338,132 @@ async function viewCandidateDetail(params, el) {
     <div id="profBody"></div>`;
   $$('#profTabs button').forEach((b) => (b.onclick = () => { profileTab = b.dataset.t; viewCandidateDetail(params, el); }));
   const body = $('#profBody');
-  const renderers = { overview: tabOverview, eligibility: tabEligibility, assessment: tabAssessment, questions: tabQuestions, interview: tabInterview, performance: tabPerformance, integrity: tabIntegrity, reports: tabReports, audit: tabAudit };
+  const renderers = { overview: tabOverview, recruitment: tabRecruitment, eligibility: tabEligibility, assessment: tabAssessment, questions: tabQuestions, interview: tabInterview, performance: tabPerformance, integrity: tabIntegrity, reports: tabReports, audit: tabAudit };
   (renderers[profileTab] || tabOverview)(d, body, id);
 }
 function initials(n) { return (n || '').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase(); }
 function kv(k, v) { return `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line-soft);font-size:13px;"><span class="muted">${esc(k)}</span><span style="font-weight:500;text-align:right;">${esc(v == null || v === '' ? '—' : v)}</span></div>`; }
+
+// The recruitment report: one candidate, in the sections the business reads
+// them in. Assessment results are shown as the attempts recorded them and are
+// not editable here — the attempt stays authoritative, so nothing on this
+// screen can disagree with what the candidate actually did.
+async function tabRecruitment(d, el, id) {
+  el.innerHTML = 'Loading…';
+  const [{ report }, meta] = await Promise.all([
+    api('/recruitment/' + id),
+    api('/recruitment/meta'),
+  ]);
+  const c = report.candidate;
+  const a = report.assessment;
+  const iv = report.interview;
+  const adm = report.administrative;
+  const out = report.outcome;
+
+  const mark = (v, max) => (v === null || v === undefined ? '—' : v + (max != null ? ' / ' + max : ''));
+  const scoreOptions = (selected) => ['', ...meta.interviewScores]
+    .map((v) => '<option value="' + v + '" ' + (String(selected === null || selected === undefined ? '' : selected) === String(v) ? 'selected' : '') + '>' + (v === '' ? '—' : v) + '</option>').join('');
+
+  el.innerHTML = `
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="section-title">Candidate information</div>
+        ${kv('Candidate name', c.name)}
+        ${kv('Candidate phone number', c.phone)}
+        ${kv('LALCO ID', c.code)}
+        ${kv('Profile status', c.profileStatus === 'PROFILE_COMPLETED' ? 'Completed by the candidate' : 'Not completed yet')}
+      </div>
+      <div class="card">
+        <div class="section-title">Education</div>
+        ${kv('Graduate from', c.graduateFromLabels ? c.graduateFromLabels.en + ' / ' + c.graduateFromLabels.lo : (c.graduateFrom || '—'))}
+        ${kv('School name', c.school)}
+        ${kv('Subject', c.subject)}
+        ${kv('GPA / mark', c.gpa)}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="section-title">Assessment results</div>
+      <p class="faint" style="margin-top:-4px;">Taken from the attempts themselves. They cannot be typed in here.</p>
+      <div class="grid grid-4" style="gap:12px;">
+        <div class="kpi"><div class="num">${a.iq && a.iq.estimatedIq != null ? a.iq.estimatedIq : '—'}</div><div class="lbl">IQ mark (estimated)</div></div>
+        <div class="kpi"><div class="num">${a.calculation ? mark(a.calculation.marks, a.calculation.max) : '—'}</div><div class="lbl">Calculation test</div></div>
+        <div class="kpi"><div class="num">${a.essay ? mark(a.essay.marks, a.essay.max) : '—'}</div><div class="lbl">Essay test</div></div>
+        <div class="kpi"><div class="num">${adm.character ? esc(adm.character) : '—'}</div><div class="lbl">Character</div></div>
+      </div>
+      ${a.iq ? `<p class="faint" style="margin-top:10px;">${esc(a.iq.correct)}/${esc(a.iq.totalQuestions)} correct · ${esc(a.iq.percentage)}%. ${esc(meta.estimatedIqDisclaimer)}</p>` : ''}
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="section-title">Interview</div>
+      <div class="grid grid-3" style="gap:12px;">
+        <div class="field"><label class="field-label">Interviewer</label>
+          <select id="rrInterviewer">
+            <option value="">—</option>
+            ${meta.interviewers.map((u) => `<option value="${esc(u.id)}" ${iv.interviewerId === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
+          </select></div>
+        <div class="field"><label class="field-label">HR / branch interview score</label>
+          <select id="rrHr">${scoreOptions(iv.hrScore)}</select></div>
+        <div class="field"><label class="field-label">Chairman interview score</label>
+          <select id="rrChair">${scoreOptions(iv.chairmanScore)}</select></div>
+        <div class="field"><label class="field-label">Interview result</label>
+          <select id="rrResult">
+            <option value="">—</option>
+            ${meta.interviewResults.map((r) => `<option value="${r}" ${iv.result === r ? 'selected' : ''}>${r === 'PASS' ? 'Pass' : 'Not pass'}</option>`).join('')}
+          </select></div>
+        <div class="field" style="grid-column:span 2;"><label class="field-label">Remark</label>
+          <input id="rrRemark" value="${esc(iv.remark || '')}" maxlength="500"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="section-title">Reference and character</div>
+      <div class="grid grid-2" style="gap:12px;">
+        <div class="field"><label class="field-label">Result for reference</label>
+          <input id="rrReference" value="${esc(adm.referenceResult || '')}" maxlength="500"></div>
+        <div class="field"><label class="field-label">Character</label>
+          <input id="rrCharacter" value="${esc(adm.character || '')}" maxlength="500"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="section-title">Final result and employment</div>
+      <div class="grid grid-2" style="gap:12px;">
+        <div class="field"><label class="field-label">Final result</label>
+          <select id="rrFinal">
+            ${meta.finalResults.map((r) => `<option value="${r}" ${out.finalResult === r ? 'selected' : ''}>${r === 'PENDING' ? 'Pending' : r === 'PASS' ? 'Pass' : 'Not pass'}</option>`).join('')}
+          </select></div>
+        <div class="field"><label class="field-label">Date come to work</label>
+          <input id="rrDate" type="date" value="${esc(out.dateComeToWork || '')}">
+          <span class="faint">Leave blank until the candidate joins.</span></div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+      <span class="faint" style="align-self:center;">${report.updatedBy ? 'Last updated by ' + esc(report.updatedBy) : ''}</span>
+      <button class="btn btn-primary" id="rrSave" data-busy="Saving…">Save recruitment record</button>
+    </div>`;
+
+  $('#rrSave').onclick = async () => {
+    // The server validates every one of these again and is the authority.
+    const r = await api('/recruitment/' + id, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        interviewerId: $('#rrInterviewer').value || null,
+        hrScore: $('#rrHr').value === '' ? null : Number($('#rrHr').value),
+        chairmanScore: $('#rrChair').value === '' ? null : Number($('#rrChair').value),
+        interviewResult: $('#rrResult').value || null,
+        remark: $('#rrRemark').value.trim() || null,
+        referenceResult: $('#rrReference').value.trim() || null,
+        character: $('#rrCharacter').value.trim() || null,
+        finalResult: $('#rrFinal').value,
+        dateComeToWork: $('#rrDate').value || null,
+      }),
+    });
+    toast(r.changed.length ? 'Recruitment record updated (' + r.changed.length + ' field(s)).' : 'Nothing changed.');
+    tabRecruitment(d, el, id);
+  };
+}
 
 function tabOverview(d, el) {
   const c = d.candidate;

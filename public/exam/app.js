@@ -300,6 +300,7 @@ async function boot() {
       if (info.session.language) STATE.language = info.session.language;
       return renderQuestionFlow(info);
     }
+    if (info.profileStatus !== 'PROFILE_COMPLETED') return renderProfile(info);
     renderInstructions(info);
   } catch (e) {
     // The server finalizes an expired assessment on any request, so this is the
@@ -308,6 +309,26 @@ async function boot() {
     if (e.status === 423 || (e.data && e.data.paused)) return renderPaused(e.data || {});
     shell(`<div style="text-align:center;padding-top:60px;"><h2>${esc(t('linkUnavailable'))}</h2><p class="muted">${esc(e.data && e.data.error || e.message)}</p></div>`);
   }
+}
+
+// The candidate's own details, asked for before the assessment. The form is
+// shared with the IQ portal so both products ask in the same way.
+function renderProfile(info) {
+  STATE.step = 'profile'; // no session yet: the language choice is local
+  window.CandidateProfileForm.reset(info.profile);
+  window.CandidateProfileForm.render({
+    t, esc, shell, api: exam, info,
+    lang: () => STATE.language,
+    languageToggle: (rerender) => wireLanguageToggle(rerender),
+    onSaved: (saved) => {
+      const next = Object.assign({}, info, { profile: saved, profileStatus: 'PROFILE_COMPLETED' });
+      if (saved && saved.fullName) {
+        STATE.candidateName = saved.fullName;
+        next.candidateName = saved.fullName;
+      }
+      renderInstructions(next);
+    },
+  });
 }
 
 function renderInstructions(info) {

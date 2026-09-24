@@ -6,6 +6,7 @@ const { isPaused, linkLiveStatus, remainingSeconds } = require('../lib/examContr
 const { resolveQuestionText, normaliseLanguage, DEFAULT_LANGUAGE } = require('../lib/questionText');
 const { examLimiter, flagLimiter } = require('../middleware/auth');
 const selection = require('../lib/questionSelection');
+const profile = require('../lib/candidateProfile');
 const { audit } = require('../lib/audit');
 
 const router = express.Router();
@@ -170,6 +171,12 @@ function respondWithCandidateContext(req, res, link, session) {
     // present a recruitment assessment or an IQ test. It carries no answer
     // key, no marking rule and no internal id.
     assessmentType: assessment ? (assessment.assessment_type || 'GENERAL_ASSESSMENT') : 'GENERAL_ASSESSMENT',
+    // The candidate's own profile, so the portal shows the welcome/profile step
+    // first and can prefill it on a reopen. It is this candidate's own data and
+    // nothing else: no database id, no score, no other candidate.
+    profile: profile.profileForCandidate(c),
+    profileStatus: profile.profileStatus(c),
+    graduateFromOptions: profile.GRADUATE_FROM,
     session: session ? {
       // `status` is what the candidate's portal keys off: SUBMITTED for a manual
       // submission, AUTO_SUBMITTED when the server finalized it on time expiry.
@@ -189,6 +196,42 @@ function respondWithCandidateContext(req, res, link, session) {
     } : null,
   });
 }
+
+// ---- Candidate profile ----
+// Saved BEFORE the assessment starts, and saved against the candidate the
+// invitation already belongs to: reopening a link updates that record rather
+// than creating a second one. Nothing here can name a different candidate —
+// the token decides who this is, not the request body.
+router.post('/:token/profile', (req, res) => {
+  const link = getLinkByToken(req.params.token);
+  if (!link) return res.status(404).json({ error: 'This link is not valid.' });
+  // An invitation that can no longer be used cannot be used to edit a record.
+  const status = liveLinkStatus(link);
+  const session = existingSessionForLink(link);
+  if (!session && status !== 'ACTIVE') {
+    return res.status(410).json({ error: 'This assessment invitation has expired.' });
+  }
+  // Once the assessment is finished the record is the assessment's history.
+  if (session && session.status === 'SUBMITTED') {
+    return res.status(409).json({ error: 'This assessment has already been submitted.' });
+  }
+
+  const { errors, values } = profile.validateProfile(req.body);
+  if (errors.length) {
+    return res.status(400).json({ error: errors[0].message, errors });
+  }
+  const saved = profile.saveProfile(link.candidate_id, values);
+  if (!saved) return res.status(404).json({ error: 'This link is not valid.' });
+  audit({
+    userName: 'Candidate (public exam)', role: 'CANDIDATE',
+    action: 'Candidate profile saved', target: saved.code, ip: req.ip,
+  });
+  res.json({
+    ok: true,
+    profile: profile.profileForCandidate(saved),
+    profileStatus: profile.profileStatus(saved),
+  });
+});
 
 // ---- Verify identity + Start assessment ----
 router.post('/:token/start', (req, res) => {
@@ -240,6 +283,15 @@ router.post('/:token/start', (req, res) => {
   // The question set has to be satisfiable BEFORE anything is written. A pool
   // too small for the configuration is a misconfiguration, not a candidate
   // problem, so the attempt is refused whole rather than started short.
+  // The profile comes first: the assessment cannot start until the candidate
+  // has given the information the recruitment record needs.
+  if (profile.profileStatus(c) !== 'PROFILE_COMPLETED') {
+    return res.status(428).json({
+      error: 'Please complete your profile before starting.',
+      profileRequired: true,
+    });
+  }
+
   const selectionProblems = selection.validateSelection(assessment);
   if (selectionProblems.length) {
     return res.status(409).json({

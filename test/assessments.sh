@@ -199,6 +199,7 @@ check "the invitation was issued" "$([ -n "$TIME_TOKEN" ] && echo 0 || echo 1)" 
 expect_eq "the link records which assessment it is for" "$NEW_ID" "$(dbq "SELECT assessment_id AS v FROM assessment_links WHERE candidate_id='$TIME_CAND_ID'")"
 expect_eq "the link expires after the assessment's 5-minute window, not the global 10" 5 \
   "$(dbq "SELECT CAST(ROUND((julianday(expires_at)-julianday('now'))*1440) AS INT) AS v FROM assessment_links WHERE candidate_id='$TIME_CAND_ID'")"
+complete_profile "$TIME_TOKEN"
 http_body POST "$BASE/api/exam/$TIME_TOKEN/start" '' "{\"candidateCode\":\"$TIME_CAND_CODE\"}" > /dev/null
 expect_eq "the session records which assessment was sat" "$NEW_ID" "$(dbq "SELECT assessment_id AS v FROM assessment_sessions WHERE candidate_id='$TIME_CAND_ID'")"
 expect_eq "the exam clock is the assessment's 25 minutes, not the global 45" 25 \
@@ -302,6 +303,7 @@ expect_eq "the percentage is computed from the snapshotted total" "$MARKS_BEFORE
 # A candidate sitting it NOW is judged by the new rules.
 read -r NEW_RULES_ID NEW_RULES_CODE <<< "$(new_candidate "$SUPER" "New Rules Candidate")"
 NEW_RULES_TOKEN=$(new_link "$SUPER" "$NEW_RULES_ID")
+complete_profile "$NEW_RULES_TOKEN"
 http_body POST "$BASE/api/exam/$NEW_RULES_TOKEN/start" '' "{\"candidateCode\":\"$NEW_RULES_CODE\"}" > /dev/null
 expect_eq "a candidate starting now snapshots the NEW threshold" 95 \
   "$(dbq "SELECT pass_threshold AS v FROM assessment_sessions WHERE candidate_id='$NEW_RULES_ID'")"

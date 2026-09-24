@@ -99,6 +99,7 @@ app.use('/api/admin/users', require('./routes/admin/users'));
 app.use('/api/admin/exam-control', require('./routes/admin/examControl'));
 app.use('/api/admin/assessments', require('./routes/admin/assessments'));
 app.use('/api/admin/iq', require('./routes/admin/iq'));
+app.use('/api/admin/recruitment', require('./routes/admin/recruitment'));
 app.use('/api/admin', require('./routes/admin/misc'));
 app.use('/api/exam', require('./routes/exam'));
 

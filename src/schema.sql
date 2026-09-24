@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS settings (
   require_candidate_id INTEGER NOT NULL DEFAULT 1,
   require_phone INTEGER NOT NULL DEFAULT 0,
   require_dob INTEGER NOT NULL DEFAULT 0,
+  -- The invitation message an administrator copies, per language. [Candidate
+  -- Name] and [LINK] are substituted when the invitation is generated. NULL
+  -- means "use the built-in wording", so an existing database needs no data
+  -- migration to keep sending invitations.
+  invite_template_en TEXT,
+  invite_template_lo TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -83,6 +89,15 @@ CREATE TABLE IF NOT EXISTS candidates (
   recruitment_batch TEXT,
   recruiter_id TEXT REFERENCES users(id),
   iq INTEGER,
+  -- What the candidate graduated from, as a stable internal value. The display
+  -- label is translated in the UI; this column never holds a translated label,
+  -- so switching language can never change what is stored. `education` keeps
+  -- the readable English text it always held, which eligibility still reads.
+  graduate_from TEXT CHECK(graduate_from IN ('HIGH_SCHOOL','COLLEGE','UNIVERSITY')),
+  -- Set the first time the candidate completes their own profile, and left
+  -- alone afterwards, so "when did they fill this in" survives later edits.
+  profile_completed_at TEXT,
+  profile_updated_at TEXT,
   status TEXT NOT NULL DEFAULT 'DRAFT',
   is_demo INTEGER NOT NULL DEFAULT 0,
   -- Archived candidates are hidden from the working lists but keep every
@@ -432,6 +447,30 @@ CREATE TABLE IF NOT EXISTS integrity_reviews (
 -- the link or navigating cannot draw a new set. A session with no rows here
 -- predates random selection (or belongs to an assessment with it switched
 -- off) and falls back to the assessment's attached question set, unchanged.
+-- The recruitment decision for one candidate: the parts a human enters, as
+-- opposed to the parts the assessments produce. Assessment results are NOT
+-- copied in here — the attempt stays authoritative and the report reads it
+-- live, so there is never a second, stale copy of a score.
+CREATE TABLE IF NOT EXISTS recruitment_records (
+  candidate_id TEXT PRIMARY KEY REFERENCES candidates(id) ON DELETE CASCADE,
+  -- Administrative fields. Free text: the business owns their meaning.
+  reference_result TEXT,
+  character_note TEXT,
+  -- Who interviewed. Stored by id so a rename follows the person.
+  interviewer_id TEXT REFERENCES users(id),
+  -- 0,5,10,15,20,25,30 — validated server-side, in the route.
+  hr_interview_score INTEGER,
+  chairman_interview_score INTEGER,
+  interview_result TEXT CHECK(interview_result IN ('PASS','NOT_PASS')),
+  remark TEXT,
+  final_result TEXT NOT NULL DEFAULT 'PENDING' CHECK(final_result IN ('PENDING','PASS','NOT_PASS')),
+  -- Blank until the candidate actually joins.
+  date_come_to_work TEXT,
+  updated_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS session_questions (
   session_id TEXT NOT NULL REFERENCES assessment_sessions(id) ON DELETE CASCADE,
   question_id TEXT NOT NULL REFERENCES questions(id),

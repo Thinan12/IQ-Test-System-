@@ -127,10 +127,23 @@ WRONG_ANSWERS=(
   '{"monthlyInterest":1,"totalInterest":1,"brokerFee":1}'
 )
 
+# A candidate fills in their own profile before anything can start. Suites that
+# are about what happens AFTER that step use this to get past it. The name is
+# read back from the invitation so the candidate keeps the name they were
+# created with, and the rest is ordinary valid information.
+complete_profile() { # complete_profile <exam-token>
+  local token="$1" name
+  name=$(jsonval "$(http_body GET "$BASE/api/exam/$token")" 'd.candidateName')
+  [ -n "$name" ] || name="Test Candidate"
+  printf '%s' "{\"fullName\":\"$name\",\"phone\":\"+856 20 5555 1234\",\"graduateFrom\":\"UNIVERSITY\",\"school\":\"National University of Laos\",\"subject\":\"Finance\",\"gpa\":3.4}" > "$TEST_DIR/profile.json"
+  curl -s -X POST "$BASE/api/exam/$token/profile" -H 'Content-Type: application/json' --data-binary "@$TEST_DIR/profile.json" > /dev/null
+}
+
 # take_assessment <exam-token> <candidate-code> <correct|wrong|partial> [essay text]
 # Starts, answers every question and submits. Echoes the submit response.
 take_assessment() {
   local token="$1" code="$2" mode="${3:-correct}" essay="${4:-Demo essay answer for verification.}"
+  complete_profile "$token"
   http_body POST "$BASE/api/exam/$token/start" '' "{\"candidateCode\":\"$code\"}" > /dev/null
   local qlist; qlist=$(http_body GET "$BASE/api/exam/$token/questions")
   local qids; qids=$(jsonval "$qlist" "d.questions.filter(q=>q.type==='CALC').map(q=>q.id).join(',')")

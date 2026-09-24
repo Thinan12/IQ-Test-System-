@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../../db');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { auditFromReq } = require('../../lib/audit');
+const invitation = require('../../lib/invitation');
 const { evaluateEligibility } = require('../../lib/eligibility');
 const { generateId } = require('../../lib/tokens');
 
@@ -87,15 +88,27 @@ router.get('/settings', (req, res) => {
   res.json({
     settings: db.prepare('SELECT * FROM settings WHERE id = 1').get(),
     eligibilityRules: db.prepare('SELECT * FROM eligibility_rules WHERE id = 1').get(),
+    // The invitation wording per language, with the built-in default shown
+    // when nobody has edited it yet.
+    invitationTemplates: invitation.currentTemplates(),
   });
 });
 router.put('/settings', requireRole('SUPER_ADMIN'), (req, res) => {
   const b = req.body || {};
   const cur = db.prepare('SELECT * FROM settings WHERE id = 1').get();
+  // An invitation with no link in it cannot be acted on, and the administrator
+  // would only find that out after sending it to somebody.
+  for (const key of ['inviteTemplateEn', 'inviteTemplateLo']) {
+    if (b[key] === undefined) continue;
+    const errs = invitation.validateTemplate(b[key]);
+    if (errs.length) return res.status(400).json({ error: errs[0], errors: errs });
+  }
   db.prepare(
     `UPDATE settings SET org_name=@orgName, pass_threshold=@passThreshold, link_expiry_minutes=@linkExpiryMinutes,
      assessment_duration_minutes=@assessmentDurationMinutes, max_ltv=@maxLtv, require_candidate_id=@requireCandidateId,
-     require_phone=@requirePhone, require_dob=@requireDob, updated_at=datetime('now') WHERE id=1`
+     require_phone=@requirePhone, require_dob=@requireDob,
+     invite_template_en=@inviteTemplateEn, invite_template_lo=@inviteTemplateLo,
+     updated_at=datetime('now') WHERE id=1`
   ).run({
     orgName: b.orgName ?? cur.org_name, passThreshold: b.passThreshold ?? cur.pass_threshold,
     linkExpiryMinutes: b.linkExpiryMinutes ?? cur.link_expiry_minutes,
@@ -104,6 +117,12 @@ router.put('/settings', requireRole('SUPER_ADMIN'), (req, res) => {
     requireCandidateId: b.requireCandidateId != null ? (b.requireCandidateId ? 1 : 0) : cur.require_candidate_id,
     requirePhone: b.requirePhone != null ? (b.requirePhone ? 1 : 0) : cur.require_phone,
     requireDob: b.requireDob != null ? (b.requireDob ? 1 : 0) : cur.require_dob,
+    // Blank means "go back to the built-in wording", so an administrator can
+    // always get out of an edit they regret.
+    inviteTemplateEn: b.inviteTemplateEn !== undefined
+      ? (String(b.inviteTemplateEn).trim() || null) : cur.invite_template_en,
+    inviteTemplateLo: b.inviteTemplateLo !== undefined
+      ? (String(b.inviteTemplateLo).trim() || null) : cur.invite_template_lo,
   });
   auditFromReq(req, 'Settings changed', 'settings', cur, b);
   res.json({ ok: true });

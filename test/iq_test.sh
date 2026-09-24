@@ -130,6 +130,7 @@ INTRO=$(http_body GET "$BASE/api/exam/$TOK")
 expect_eq "the portal is told it is an IQ test" "IQ_TEST" "$(jsonval "$INTRO" 'd.assessmentType')"
 expect_eq "with the configured duration" 30 "$(jsonval "$INTRO" 'd.durationMinutes')"
 expect_eq "and the right number of questions" 20 "$(jsonval "$INTRO" 'd.questionCount')"
+complete_profile "$TOK"
 START=$(public_json POST "$BASE/api/exam/$TOK/start" "{\"candidateCode\":\"$CCODE\"}")
 expect_eq "the test starts" "true" "$(jsonval "$START" 'String(d.started)')"
 SID=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id='$CID'")
@@ -248,6 +249,7 @@ c_head "UNANSWERED — an untouched test scores zero, not an error"
 read -r CID2 CCODE2 <<< "$(new_candidate "$HR" "IQ Candidate Silent")"
 TOK2=$(jsonval "$(http_body POST "$BASE/api/admin/candidates/$CID2/links" "$HR" "{\"assessmentId\":\"$IQ_ASMT\",\"language\":\"lo\"}")" 'd.token')
 expect_eq "a Lao invitation opens in Lao" "lo" "$(jsonval "$(http_body GET "$BASE/api/exam/$TOK2")" 'd.linkLanguage')"
+complete_profile "$TOK2"
 public_json POST "$BASE/api/exam/$TOK2/start" "{\"candidateCode\":\"$CCODE2\"}" > /dev/null
 SID2=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id='$CID2'")
 expect_eq "the session inherited Lao from the invitation alone" "lo" "$(dbq "SELECT language AS v FROM assessment_sessions WHERE id='$SID2'")"
@@ -291,6 +293,7 @@ expect_eq "the recruitment assessment kept its own question set" 0 "$(dbq "SELEC
 # A recruitment sitting must see, and be marked on, only recruitment questions.
 read -r CID3 CCODE3 <<< "$(new_candidate "$HR" "Recruitment Not IQ")"
 TOK3=$(jsonval "$(http_body POST "$BASE/api/admin/candidates/$CID3/links" "$HR" "{\"assessmentId\":\"$GEN_ASMT\"}")" 'd.token')
+complete_profile "$TOK3"
 public_json POST "$BASE/api/exam/$TOK3/start" "{\"candidateCode\":\"$CCODE3\"}" > /dev/null
 SID3=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id='$CID3'")
 GQS=$(http_body GET "$BASE/api/exam/$TOK3/questions")

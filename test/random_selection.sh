@@ -34,6 +34,7 @@ start_attempt() { # start_attempt <name> <assessmentId> [language]
   local name="$1" asmt="$2" lang="${3:-en}" cid ccode tok sid
   read -r cid ccode <<< "$(new_candidate "$HR" "$name")"
   tok=$(jsonval "$(post_json POST "$BASE/api/admin/candidates/$cid/links" "$HR" "{\"assessmentId\":\"$asmt\",\"language\":\"$lang\"}")" 'd.token')
+  complete_profile "$tok"
   public_json POST "$BASE/api/exam/$tok/start" "{\"candidateCode\":\"$ccode\"}" > /dev/null
   sid=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id='$cid'")
   printf '%s %s %s' "$cid" "$tok" "$sid"

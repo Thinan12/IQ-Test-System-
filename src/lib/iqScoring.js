@@ -253,7 +253,13 @@ function storedIqResult(sessionId) {
   };
 }
 
+// The one wording used wherever an estimated figure is shown, so the caveat
+// cannot drift apart between the admin list, the detail view and the report.
+const ESTIMATED_IQ_DISCLAIMER =
+  'Estimated IQ-style score derived from this test only. It is not a clinically validated IQ and must not be presented as one.';
+
 module.exports = {
+  ESTIMATED_IQ_DISCLAIMER,
   DEFAULT_SCORING,
   MODELS,
   CATEGORIES,

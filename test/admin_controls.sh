@@ -60,6 +60,7 @@ expect_eq "other candidates are untouched" 1 "$(dbq "SELECT COUNT(*) AS v FROM c
 # A candidate mid-assessment must not be deletable.
 read -r C3 C3CODE <<< "$(new_candidate "$HR" "Live Delete Guard")"
 T3=$(new_link "$HR" "$C3")
+complete_profile "$T3"
 http_body POST "$BASE/api/exam/$T3/start" '' "{\"candidateCode\":\"$C3CODE\"}" > /dev/null
 DELLIVE=$(http_body DELETE "$BASE/api/admin/candidates/$C3" "$SUPER" "{\"confirmation\":\"$C3CODE\",\"password\":\"$DEMO_PASSWORD\"}")
 expect_contains "a candidate with a running assessment cannot be deleted" 'IN_PROGRESS' "$DELLIVE"
@@ -118,6 +119,7 @@ http_body PATCH "$BASE/api/admin/assessments/$ASMT" "$SUPER" '{"link_expiry_minu
 c_head "P3/P4. LIVE ASSESSMENTS dashboard"
 read -r C7 C7CODE <<< "$(new_candidate "$HR" "Live Control Candidate")"
 T7=$(new_link "$HR" "$C7")
+complete_profile "$T7"
 http_body POST "$BASE/api/exam/$T7/start" '' "{\"candidateCode\":\"$C7CODE\"}" > /dev/null
 QL=$(http_body GET "$BASE/api/exam/$T7/questions")
 Q1=$(jsonval "$QL" "d.questions.filter(q=>q.type==='CALC')[0].id")
@@ -202,6 +204,7 @@ c_head "P12. RACE CONDITIONS"
 # submit vs terminate
 read -r R1 R1CODE <<< "$(new_candidate "$HR" "Race Submit Terminate")"
 RT=$(new_link "$HR" "$R1")
+complete_profile "$RT"
 http_body POST "$BASE/api/exam/$RT/start" '' "{\"candidateCode\":\"$R1CODE\"}" > /dev/null
 RS=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$R1'")
 curl -s -o /dev/null -X POST "$BASE/api/exam/$RT/submit" &
@@ -215,6 +218,7 @@ expect_eq "and exactly one final state" "SUBMITTED" "$(dbq "SELECT status AS v F
 # pause vs expiry: a paused session must never be auto-submitted
 read -r R2 R2CODE <<< "$(new_candidate "$HR" "Race Pause Expiry")"
 RT2=$(new_link "$HR" "$R2")
+complete_profile "$RT2"
 http_body POST "$BASE/api/exam/$RT2/start" '' "{\"candidateCode\":\"$R2CODE\"}" > /dev/null
 RS2=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$R2'")
 http_body POST "$BASE$EC/sessions/$RS2/pause" "$HR" > /dev/null
@@ -231,6 +235,7 @@ expect_contains "resuming it credits the paused time back" '"ok":true' "$RES2"
 # extend vs expiry: extending past the deadline revives the exam
 read -r R3 R3CODE <<< "$(new_candidate "$HR" "Race Extend Expiry")"
 RT3=$(new_link "$HR" "$R3")
+complete_profile "$RT3"
 http_body POST "$BASE/api/exam/$RT3/start" '' "{\"candidateCode\":\"$R3CODE\"}" > /dev/null
 RS3=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$R3'")
 "$NODE" -e "

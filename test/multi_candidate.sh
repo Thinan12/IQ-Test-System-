@@ -34,14 +34,19 @@ expect_contains "C sees C's own name" "Candidate C Multi" "$C_INFO"
 expect_not_contains "C does not see A" "Candidate A Multi" "$C_INFO"
 
 c_head "Identity verification is bound to the individual candidate"
+complete_profile "$A_TOKEN"
 expect_eq "B's code cannot start A's assessment" 401 "$(http_code POST "$BASE/api/exam/$A_TOKEN/start" '' "{\"candidateCode\":\"$B_CODE\"}")"
+complete_profile "$B_TOKEN"
 expect_eq "C's code cannot start B's assessment" 401 "$(http_code POST "$BASE/api/exam/$B_TOKEN/start" '' "{\"candidateCode\":\"$C_CODE\"}")"
 
 c_head "All three complete their assessments independently"
 # Interleaved on purpose: A starts, then B starts, then C, then all submit —
 # a session must never be confused with another candidate's.
+complete_profile "$A_TOKEN"
 http_body POST "$BASE/api/exam/$A_TOKEN/start" '' "{\"candidateCode\":\"$A_CODE\"}" > /dev/null
+complete_profile "$B_TOKEN"
 http_body POST "$BASE/api/exam/$B_TOKEN/start" '' "{\"candidateCode\":\"$B_CODE\"}" > /dev/null
+complete_profile "$C_TOKEN"
 http_body POST "$BASE/api/exam/$C_TOKEN/start" '' "{\"candidateCode\":\"$C_CODE\"}" > /dev/null
 
 A_SESSIONS=$(dbq "SELECT COUNT(*) AS v FROM assessment_sessions WHERE candidate_id = '$A_ID'")

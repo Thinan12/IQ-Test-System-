@@ -125,6 +125,7 @@ expect_eq "changing it to an existing ID is rejected" 400 "$(http_code PATCH "$B
 # Start an assessment, then the ID must lock.
 CC_CODE=$(dbq "SELECT code AS v FROM candidates WHERE id = '$CC_ID'")
 TOKEN_CC=$(new_link "$HR" "$CC_ID")
+complete_profile "$TOKEN_CC"
 http_body POST "$BASE/api/exam/$TOKEN_CC/start" '' "{\"candidateCode\":\"$CC_CODE\"}" > /dev/null
 LOCKED=$(http_body PATCH "$BASE/api/admin/candidates/$CC_ID" "$HR" '{"code":"TEST-LIVE-999"}')
 expect_contains "once an assessment has started the ID is locked" 'cannot be changed' "$LOCKED"

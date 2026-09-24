@@ -24,6 +24,7 @@ expect_eq "assessment duration configured to 1 minute" 1 "$(dbq "SELECT duration
 # Answer only SOME questions, so answered/unanswered can be told apart.
 partial_attempt() { # partial_attempt <token> <code> <how-many-calc-questions>
   local token="$1" code="$2" howmany="$3"
+  complete_profile "$token"
   http_body POST "$BASE/api/exam/$token/start" '' "{\"candidateCode\":\"$code\"}" > /dev/null
   local qlist; qlist=$(http_body GET "$BASE/api/exam/$token/questions")
   local qids; qids=$(jsonval "$qlist" "d.questions.filter(q=>q.type==='CALC').map(q=>q.id).join(',')")
@@ -79,6 +80,7 @@ expect_eq "integrity record was produced" 1 "$(dbq "SELECT COUNT(*) AS v FROM in
 c_head "The assessment is locked — the candidate cannot continue"
 expect_eq "answers can no longer be saved" 409 "$(http_code POST "$BASE/api/exam/$A_TOKEN/answer" '' '{"questionId":"x","answer":{"a":1}}')"
 expect_eq "the question list is no longer served" 409 "$(http_code GET "$BASE/api/exam/$A_TOKEN/questions")"
+complete_profile "$A_TOKEN"
 expect_eq "the assessment cannot be restarted" 409 "$(http_code POST "$BASE/api/exam/$A_TOKEN/start" '' "{\"candidateCode\":\"$A_CODE\"}")"
 expect_eq "submitting again is refused" 409 "$(http_code POST "$BASE/api/exam/$A_TOKEN/submit")"
 REOPEN=$(http_body GET "$BASE/api/exam/$A_TOKEN")
@@ -114,12 +116,27 @@ partial_attempt "$B_TOKEN" "$B_CODE" 2
 SESSION_B=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$B_ID'")
 # Move this one session's deadline into the past, so the NEXT request is what
 # discovers it — independently of the background sweep.
-"$NODE" -e "
+#
+# The deadline is moved and the request is sent inside ONE process, back to
+# back. Doing it in two steps left a process-startup gap between them, and the
+# sweep — which ticks every few seconds — could finalize the session inside that
+# gap, so which path did the work depended on timing rather than on the
+# behaviour being tested.
+SAVE_RESPONSE=$("$NODE" -e "
   const Database = require('better-sqlite3');
+  const http = require('http');
   const db = new Database(process.env.DATABASE_PATH);
   db.prepare(\"UPDATE assessment_sessions SET expires_at = datetime('now','-5 seconds') WHERE id = ?\").run(process.argv[1]);
-" "$SESSION_B"
-SAVE_RESPONSE=$(http_body POST "$BASE/api/exam/$B_TOKEN/answer" '' '{"questionId":"any","answer":{"a":1}}')
+  const base = new URL(process.argv[2]);
+  const body = JSON.stringify({ questionId: 'any', answer: { a: 1 } });
+  const rq = http.request({
+    hostname: base.hostname, port: base.port,
+    path: '/api/exam/' + process.argv[3] + '/answer', method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, (r) => { let out = ''; r.setEncoding('utf8'); r.on('data', (c) => out += c); r.on('end', () => console.log(out)); });
+  rq.on('error', (e) => { console.log('{\"error\":\"' + e.message + '\"}'); });
+  rq.end(body);
+" "$SESSION_B" "$BASE" "$B_TOKEN")
 expect_contains "the request itself triggers finalization" 'automatically' "$SAVE_RESPONSE"
 expect_contains "and reports AUTO_SUBMITTED" 'AUTO_SUBMITTED' "$SAVE_RESPONSE"
 expect_eq "the session is now finalized" "AUTO_SUBMITTED" "$(dbq "SELECT submission_type AS v FROM assessment_sessions WHERE id = '$SESSION_B'")"

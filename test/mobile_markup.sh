@@ -64,6 +64,7 @@ expect_contains "navigating saves before moving on" 'await saveAnswer();' "$EXAM
 c_head "Autosave and resume actually work over HTTP"
 read -r M_ID M_CODE <<< "$(new_candidate "$HR" "Mobile Flow Candidate")"
 M_TOKEN=$(new_link "$HR" "$M_ID")
+complete_profile "$M_TOKEN"
 http_body POST "$BASE/api/exam/$M_TOKEN/start" '' "{\"candidateCode\":\"$M_CODE\"}" > /dev/null
 QLIST=$(http_body GET "$BASE/api/exam/$M_TOKEN/questions")
 QID=$(jsonval "$QLIST" "d.questions.filter(q=>q.type==='CALC')[0].id")

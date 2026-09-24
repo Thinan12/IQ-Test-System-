@@ -16,7 +16,7 @@ const { auditFromReq } = require('../../lib/audit');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { resolveTranslationStatus } = require('../../lib/questionText');
 const iq = require('../../lib/iqQuestions');
-const { computeIqResult, storedIqResult, CATEGORIES, DEFAULT_SCORING, MODELS } = require('../../lib/iqScoring');
+const { computeIqResult, storedIqResult, CATEGORIES, DEFAULT_SCORING, MODELS, ESTIMATED_IQ_DISCLAIMER } = require('../../lib/iqScoring');
 
 const router = express.Router();
 // Authentication for the whole router, exactly as the recruitment question
@@ -254,7 +254,7 @@ router.get('/results', requireRole(...RESULT_READERS), (req, res) => {
       estimatedIq: r.estimated_iq,
     })),
     // Repeated with every payload so no consumer can present the figure without it.
-    estimatedIqDisclaimer: 'Estimated IQ-style score derived from this test only. It is not a clinically validated IQ and must not be presented as one.',
+    estimatedIqDisclaimer: ESTIMATED_IQ_DISCLAIMER,
   });
 });
 
@@ -315,7 +315,7 @@ router.get('/results/:sessionId', requireRole(...RESULT_READERS), (req, res) => 
         };
       }),
     },
-    estimatedIqDisclaimer: 'Estimated IQ-style score derived from this test only. It is not a clinically validated IQ and must not be presented as one.',
+    estimatedIqDisclaimer: ESTIMATED_IQ_DISCLAIMER,
   });
 });
 

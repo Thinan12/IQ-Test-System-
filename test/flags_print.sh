@@ -25,6 +25,7 @@ post_json() { # post_json <method> <url> <token> <json-string>
 # A candidate part-way through the assessment.
 read -r C1 C1CODE <<< "$(new_candidate "$SUPER" "Flag Test Candidate")"
 T1=$(new_link "$SUPER" "$C1")
+complete_profile "$T1"
 http_body POST "$BASE/api/exam/$T1/start" '' "{\"candidateCode\":\"$C1CODE\"}" > /dev/null
 S1=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$C1'")
 QL=$(http_body GET "$BASE/api/exam/$T1/questions")
@@ -158,6 +159,7 @@ expect_eq "unflagging did not disturb the answer" "$ANS_BEFORE" \
 c_head "AUTHORIZATION — a candidate can only flag their own questions"
 read -r C2 C2CODE <<< "$(new_candidate "$SUPER" "Other Flag Candidate")"
 T2=$(new_link "$SUPER" "$C2")
+complete_profile "$T2"
 http_body POST "$BASE/api/exam/$T2/start" '' "{\"candidateCode\":\"$C2CODE\"}" > /dev/null
 S2=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$C2'")
 expect_eq "the second candidate sees none of the first candidate's flags" 0 \
@@ -275,6 +277,7 @@ read -r C4 C4CODE <<< "$(new_candidate "$SUPER" "Unstarted Print Candidate")"
 T4=$(new_link "$SUPER" "$C4")
 BEFORE_START=$(http_body GET "$BASE/api/exam/$T4")
 expect_not_contains "merely holding a link does not reveal the LALCO ID" "$C4CODE" "$BEFORE_START"
+complete_profile "$T4"
 http_body POST "$BASE/api/exam/$T4/start" '' "{\"candidateCode\":\"$C4CODE\"}" > /dev/null
 AFTER_START=$(http_body GET "$BASE/api/exam/$T4")
 expect_contains "once they prove they know it, the receipt can show it" "$C4CODE" "$AFTER_START"
@@ -289,6 +292,7 @@ LAO_ID=$(jsonval "$LAO_CAND" 'd.id')
 LAO_CODE=$(jsonval "$LAO_CAND" 'd.code')
 expect_eq "a candidate with a Lao name is stored intact" "$LAO_NAME" "$(dbq "SELECT full_name AS v FROM candidates WHERE id = '$LAO_ID'")"
 LAO_TOKEN=$(new_link "$SUPER" "$LAO_ID")
+complete_profile "$LAO_TOKEN"
 http_body POST "$BASE/api/exam/$LAO_TOKEN/start" '' "{\"candidateCode\":\"$LAO_CODE\",\"language\":\"lo\"}" > /dev/null
 LAO_S=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$LAO_ID'")
 http_body POST "$BASE/api/exam/$LAO_TOKEN/flag" '' "{\"questionId\":\"$QA\"}" > /dev/null

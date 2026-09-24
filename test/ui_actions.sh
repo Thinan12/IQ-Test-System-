@@ -81,7 +81,12 @@ TOK1=$(jsonval "$LINK1" 'd.token'); LID1=$(jsonval "$LINK1" 'd.id')
 expect_eq "'Generate New Link' created a link row" 1 "$(dbq "SELECT COUNT(*) AS v FROM assessment_links WHERE id = '$LID1'")"
 expect_eq "the link is audited" 1 "$(dbq "SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END AS v FROM audit_logs WHERE action = 'Assessment link generated' AND target = '$UCODE'")"
 expect_contains "'Copy Link' has a real URL to copy" '/exam/' "$(jsonval "$LINK1" 'd.examUrl')"
-expect_contains "'Copy WhatsApp Message' has real text to copy" 'LALCO recruitment assessment' "$(jsonval "$LINK1" 'd.whatsappMessage')"
+# The invitation wording now comes from the editable template, so what matters
+# is that the message an administrator copies actually carries the two things it
+# has to: who it is for, and the link to open.
+expect_contains "'Copy WhatsApp Message' has real text to copy" '/exam/' "$(jsonval "$LINK1" 'd.whatsappMessage')"
+expect_contains "the invitation names the candidate" "$(dbq "SELECT full_name AS v FROM candidates WHERE id='$UID_'")" "$(jsonval "$LINK1" 'd.whatsappMessage')"
+expect_contains "and the same message is offered under its own name" '/exam/' "$(jsonval "$LINK1" 'd.invitationMessage')"
 expect_eq "the link carries its own expiry" 1 "$(dbq "SELECT CASE WHEN expires_at IS NOT NULL THEN 1 ELSE 0 END AS v FROM assessment_links WHERE id = '$LID1'")"
 expect_eq "the new link works for a candidate" 200 "$(http_code GET "$BASE/api/exam/$TOK1")"
 

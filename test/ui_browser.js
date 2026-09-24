@@ -32,6 +32,27 @@ function bad(msg) { failures.push(msg); console.log('\x1b[31m  FAIL  ' + msg + '
 function check(cond, msg, detail) { cond ? ok(msg) : bad(msg + (detail ? ' — ' + detail : '')); }
 function head(t) { console.log('\n\x1b[1m== ' + t + ' ==\x1b[0m'); }
 function one(sql, ...a) { const r = db.prepare(sql).get(...a); return r ? Object.values(r)[0] : null; }
+
+// A candidate fills in their own details before anything else, so every journey
+// through a candidate portal starts on the profile form. Suites that are about
+// what happens AFTER that step use this to get past it the way a real candidate
+// would: by filling the form in and saving it. It is a no-op once the profile
+// has already been completed, so reopening a link still lands on instructions.
+async function completeProfile(p, name) {
+  await p.waitForSelector('#pfSave, #startBtn, #vCode', { timeout: 20000 });
+  if (!(await p.locator('#pfSave').count())) return false;
+  const current = await p.locator('#pf_fullName').inputValue();
+  await p.fill('#pf_fullName', current || name || 'Browser Candidate');
+  await p.fill('#pf_phone', '+856 20 5555 1234');
+  await p.selectOption('#pf_graduateFrom', 'UNIVERSITY');
+  await p.fill('#pf_school', 'National University of Laos');
+  await p.fill('#pf_subject', 'Finance');
+  await p.fill('#pf_gpa', '3.4');
+  await p.click('#pfSave');
+  await p.waitForSelector('#startBtn', { timeout: 20000 });
+  return true;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
@@ -127,6 +148,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     cand.on('console', (m) => { if (m.type() === 'error') candErrors.push(m.text()); });
     cand.on('pageerror', (e) => candErrors.push('pageerror: ' + e.message));
     await cand.goto(`${BASE}/exam/${link.token}`, { waitUntil: 'networkidle' });
+    await completeProfile(cand);
     const introText = await cand.locator('body').innerText();
     check(introText.includes('Browser UI Candidate'), 'the candidate portal greets the right candidate');
     check(!introText.includes('superadmin'), 'no admin identity leaks into the candidate portal');
@@ -373,6 +395,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(!!langCand.token, 'a local test candidate and link were created');
 
     await lp.goto(`${BASE}/exam/${langCand.token}`, { waitUntil: 'networkidle' });
+
+    await completeProfile(lp);
     check(await lp.locator('#langSwitch').isVisible(), 'the English | ລາວ switch is offered before starting');
 
     await lp.click('#langSwitch [data-lang="lo"]');
@@ -586,6 +610,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // 1. the candidate opens a question
     await fp.goto(`${BASE}/exam/${flagCand.token}`, { waitUntil: 'networkidle' });
+    await completeProfile(fp);
     await fp.fill('#vCode', flagCand.code);
     await fp.check('#ack');
     await fp.click('#startBtn');
@@ -734,6 +759,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       return { id: r.id, code: r.code, token: l.token };
     });
     await dp.goto(`${BASE}/exam/${doneCand.token}`, { waitUntil: 'networkidle' });
+    await completeProfile(dp);
     await dp.fill('#vCode', doneCand.code);
     await dp.check('#ack');
     await dp.click('#startBtn');
@@ -852,6 +878,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const invCtx = await browser.newContext();
     const invPage = await invCtx.newPage();
     await invPage.goto(`${BASE}/exam/${laoLink.token}`, { waitUntil: 'networkidle' });
+    await completeProfile(invPage);
     await invPage.waitForTimeout(700);
     const invIntro = await invPage.locator('.pbody').innerText();
     check(/[\u0E80-\u0EFF]/.test(invIntro), 'the invitation screen opens in Lao with no candidate action');
@@ -1045,6 +1072,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const trCtx = await browser.newContext();
       const trPage = await trCtx.newPage();
       await trPage.goto(`${BASE}/exam/${trCand.token}`, { waitUntil: 'networkidle' });
+      await completeProfile(trPage);
       await trPage.fill('#vCode', trCand.code);
       await trPage.check('#ack');
       await trPage.click('#startBtn');
@@ -1193,6 +1221,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     iqPage.on('console', (m) => { if (m.type() === 'error') iqErrors.push(m.text()); });
 
     await iqPage.goto(`${BASE}/iq/${iqCand.token}`, { waitUntil: 'networkidle' });
+
+    await completeProfile(iqPage);
     await iqPage.waitForSelector('#startBtn', { timeout: 20000 });
     const iqIntro = await iqPage.locator('.pbody').innerText();
     check(/Reasoning Test|Questions/.test(iqIntro), '9. the IQ portal opens with instructions');
@@ -1334,6 +1364,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const rctx = await browser.newContext();
       const rp = await rctx.newPage();
       await rp.goto(`${BASE}/iq/${rc.token}`, { waitUntil: 'networkidle' });
+      await completeProfile(rp);
       await rp.waitForSelector('#startBtn', { timeout: 20000 });
       await rp.fill('#vCode', rc.code);
       await rp.check('#ack');
@@ -1377,6 +1408,133 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         randomizeQuestions: true, questionsToShow: null }) });
     }, iqCand.testId);
 
+
+    // ------------------- The candidate journey, exactly as specified
+    // Admin invites in Lao; the candidate lands on their own details, fills
+    // them in, chooses a test language and only then sits the test.
+    head('Candidate journey — profile first, in the invited language');
+    const jCand = await page.evaluate(async () => {
+      const asmts = await api('/assessments');
+      const iqTest = asmts.assessments.find((a) => a.assessmentType === 'IQ_TEST');
+      const c = await api('/candidates', { method: 'POST', body: JSON.stringify({
+        fullName: 'Journey Candidate', applicationType: 'NORMAL', iq: 112, education: 'High school' }) });
+      const l = await api('/candidates/' + c.id + '/links', { method: 'POST', body: JSON.stringify({
+        assessmentId: iqTest.id, language: 'lo' }) });
+      return { id: c.id, code: c.code, token: l.token, message: l.invitationMessage };
+    });
+    check(/[຀-໿]/.test(jCand.message || ''), 'the Lao invitation message is in Lao script');
+    check((jCand.message || '').includes('/iq/'), 'and carries the secure link');
+    check(!(jCand.message || '').includes(jCand.id), 'the invitation exposes no database id');
+
+    const jCtx = await browser.newContext();
+    const jp = await jCtx.newPage();
+    const jErrors = [];
+    jp.on('pageerror', (e) => jErrors.push('pageerror: ' + e.message));
+    jp.on('console', (m) => { if (m.type() === 'error') jErrors.push(m.text()); });
+
+    await jp.goto(`${BASE}/iq/${jCand.token}`, { waitUntil: 'networkidle' });
+    await jp.waitForSelector('#pfSave, #startBtn', { timeout: 20000 });
+    check(await jp.locator('#pfSave').count() > 0, '1. the candidate lands on their details, not on questions');
+    check(await jp.locator('#opts').count() === 0, 'no question is shown before the profile is filled in');
+    check(await jp.locator('#langSwitch').count() > 0, '2. and can choose a language straight away');
+
+    // 3. Values typed in one language survive switching to the other.
+    await jp.fill('#pf_fullName', 'Journey Candidate');
+    await jp.fill('#pf_phone', '+856 20 7777 8888');
+    await jp.selectOption('#pf_graduateFrom', 'UNIVERSITY');
+    await jp.fill('#pf_school', 'Souphanouvong University');
+    await jp.fill('#pf_subject', 'Accounting');
+    await jp.fill('#pf_gpa', '3.2');
+    await jp.click('#langSwitch [data-lang="en"]');
+    await jp.waitForTimeout(900);
+    check(await jp.locator('#pf_school').inputValue() === 'Souphanouvong University',
+      '3. switching language keeps what was already typed');
+    check(await jp.locator('#pf_graduateFrom').inputValue() === 'UNIVERSITY',
+      'and keeps the stable value behind the translated label');
+    await jp.click('#langSwitch [data-lang="lo"]');
+    await jp.waitForTimeout(900);
+    check(await jp.locator('#pf_phone').inputValue() === '+856 20 7777 8888',
+      'and switching back keeps it too');
+
+    // 4. A bad value is refused by the server and reported against its field.
+    await jp.fill('#pf_gpa', '999');
+    await jp.click('#pfSave');
+    await jp.waitForTimeout(1200);
+    check(await jp.locator('#pfSave').count() > 0, '4. an out-of-range mark does not let the candidate through');
+    check((await jp.locator('.pf-err').count()) > 0, 'and the field is marked as the problem');
+    check(one('SELECT COUNT(*) FROM candidates WHERE id = ? AND gpa = 999', jCand.id) === 0,
+      'nothing invalid reached the candidate record');
+
+    // 5. Correcting it saves and moves on.
+    await jp.fill('#pf_gpa', '3.2');
+    await jp.click('#pfSave');
+    await jp.waitForSelector('#startBtn', { timeout: 20000 });
+    check(true, '5. a valid profile is accepted and the test can begin');
+    const jRow = db.prepare('SELECT * FROM candidates WHERE id = ?').get(jCand.id);
+    check(jRow.phone === '+856 20 7777 8888', 'the phone reached the candidate record', jRow.phone);
+    check(jRow.graduate_from === 'UNIVERSITY', 'the stable value was stored, not the Lao label', jRow.graduate_from);
+    check(jRow.university === 'Souphanouvong University', 'the school reached the existing column', jRow.university);
+    check(jRow.major === 'Accounting', 'and the subject', jRow.major);
+    check(!!jRow.profile_completed_at, 'and the profile is marked complete');
+    check(one('SELECT COUNT(*) FROM candidates WHERE full_name = ?', 'Journey Candidate') === 1,
+      'no second candidate record was invented');
+
+    // 6. Sit the test, then reopen: the profile step does not come back.
+    await jp.fill('#vCode', jCand.code);
+    await jp.check('#ack');
+    await jp.click('#startBtn');
+    await jp.waitForSelector('#nextBtn', { timeout: 20000 });
+    const jSession = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ?').get(jCand.id);
+    check(!!jSession && jSession.status === 'IN_PROGRESS', '6. the test started');
+    check(jSession.language === 'lo', 'in the language the invitation was sent in', jSession.language);
+    const jFirst = await jp.evaluate(async (t) => {
+      const r = await fetch('/api/exam/' + t + '/questions');
+      return (await r.json()).questions.map((q) => q.id).join(',');
+    }, jCand.token);
+    await jp.reload({ waitUntil: 'networkidle' });
+    await jp.waitForTimeout(1500);
+    check(await jp.locator('#pfSave').count() === 0, '7. reopening does not ask for the profile again');
+    const jAfter = await jp.evaluate(async (t) => {
+      const r = await fetch('/api/exam/' + t + '/questions');
+      return (await r.json()).questions.map((q) => q.id).join(',');
+    }, jCand.token);
+    check(jAfter === jFirst, 'and the question set is unchanged');
+    const jRealErrors = jErrors.filter((e) => !/favicon|status of 40[019]|status of 428/i.test(e));
+    check(jRealErrors.length === 0, 'no console errors during the candidate journey', jRealErrors.slice(0, 2).join(' | '));
+    await jCtx.close();
+
+    // 8. The admin record now carries what the candidate entered.
+    head('Recruitment report — the admin record fills itself in');
+    await page.goto(`${BASE}/admin/#/candidates/${jCand.id}`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('#profTabs', { timeout: 15000 });
+    await page.click('#profTabs button[data-t="recruitment"]');
+    await page.waitForSelector('#rrSave', { timeout: 15000 });
+    const rrText = await page.locator('#profBody').innerText();
+    check(/Souphanouvong University/.test(rrText), '8. the school the candidate typed appears in the report');
+    check(/Accounting/.test(rrText), 'and the subject');
+    check(/\+856 20 7777 8888/.test(rrText), 'and the phone number');
+    check(/Completed by the candidate/.test(rrText), 'and the profile is shown as candidate-completed');
+
+    // 9. The interview and final result are entered here and validated server-side.
+    await page.selectOption('#rrHr', '25');
+    await page.selectOption('#rrChair', '30');
+    await page.selectOption('#rrResult', 'PASS');
+    await page.fill('#rrRemark', 'Interviewed well');
+    await page.fill('#rrCharacter', 'Calm and clear');
+    await page.selectOption('#rrFinal', 'PASS');
+    await page.fill('#rrDate', '2026-11-03');
+    await page.click('#rrSave');
+    await page.waitForTimeout(2000);
+    const rrRow = db.prepare('SELECT * FROM recruitment_records WHERE candidate_id = ?').get(jCand.id);
+    check(!!rrRow, '9. the recruitment record was saved');
+    check(rrRow && rrRow.hr_interview_score === 25, 'with the HR interview score', rrRow && String(rrRow.hr_interview_score));
+    check(rrRow && rrRow.chairman_interview_score === 30, 'and the chairman score', rrRow && String(rrRow.chairman_interview_score));
+    check(rrRow && rrRow.interview_result === 'PASS', 'and the interview result');
+    check(rrRow && rrRow.final_result === 'PASS', 'and the final result');
+    check(rrRow && rrRow.date_come_to_work === '2026-11-03', 'and the start date', rrRow && rrRow.date_come_to_work);
+    check(one('SELECT COUNT(*) FROM audit_logs WHERE action = ?', 'RECRUITMENT_RECORD_UPDATED') > 0,
+      'and the change is attributable in the audit trail');
+
     // ------------------------ Lao end to end: sit, submit and print in Lao
     // The production smoke test could not prove this: that candidate switched
     // back to English before submitting, so the Lao branch of the receipt and
@@ -1399,6 +1557,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // 1. start the exam in Lao
     await lop.goto(`${BASE}/exam/${laoCand.token}`, { waitUntil: 'networkidle' });
+    await completeProfile(lop);
     await lop.click('#langSwitch [data-lang="lo"]');
     await lop.waitForTimeout(700);
     const instrLao = await lop.locator('.pbody').innerText();

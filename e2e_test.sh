@@ -60,7 +60,20 @@ STATUS=$(curl -s -o "$TEST_DIR/noauth.json" -w "%{http_code}" $BASE/api/admin/ca
 [ "$STATUS" = "401" ] || fail "expected 401 for unauthenticated admin access, got $STATUS: $(cat "$TEST_DIR/noauth.json")"
 echo "OK - unauthenticated admin API access correctly rejected (401)"
 
+# A candidate fills in their own profile before the assessment can start.
+complete_profile() { # complete_profile <exam-token>
+  local token="$1" name
+  name=$("$NODE" -e "
+    let raw=''; process.stdin.setEncoding('utf8');
+    process.stdin.on('data', c => raw += c);
+    process.stdin.on('end', () => { try { console.log(JSON.parse(raw).candidateName || ''); } catch (e) { console.log(''); } });
+  " <<< "$(curl -s "$BASE/api/exam/$token")")
+  [ -n "$name" ] || name="Test Candidate"
+  curl -s -X POST "$BASE/api/exam/$token/profile" -H 'Content-Type: application/json'     -d "{\"fullName\":\"$name\",\"phone\":\"+856 20 5555 1234\",\"graduateFrom\":\"UNIVERSITY\",\"school\":\"National University of Laos\",\"subject\":\"Finance\",\"gpa\":3.4}" > /dev/null
+}
+
 echo "== 5. Candidate starts assessment (verification required: candidate ID) =="
+complete_profile "$EXAM_TOKEN"
 START=$(curl -s -X POST $BASE/api/exam/$EXAM_TOKEN/start -H 'Content-Type: application/json' -d "{\"candidateCode\":\"WRONG-CODE\"}")
 echo "$START" | grep -q "error" || fail "wrong candidate ID should have been rejected: $START"
 echo "OK - wrong verification code rejected: $START"
@@ -70,6 +83,7 @@ const http=require('http');
 " )
 CAND_DETAIL=$(curl -s $BASE/api/admin/candidates/$CAND_ID -H "Authorization: Bearer $TOKEN")
 REAL_CODE=$(printf '%s' "$CAND_DETAIL" | "$NODE" -e "console.log(JSON.parse(require('fs').readFileSync(0, 'utf8')).candidate.code)")
+complete_profile "$EXAM_TOKEN"
 START2=$(curl -s -X POST $BASE/api/exam/$EXAM_TOKEN/start -H 'Content-Type: application/json' -d "{\"candidateCode\":\"$REAL_CODE\"}")
 echo "$START2" | grep -q "expiresAt" || fail "correct verification should have started the session: $START2"
 echo "OK - assessment started with correct verification: $START2"
