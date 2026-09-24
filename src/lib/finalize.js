@@ -79,7 +79,7 @@ function meaningfulAnswerCount(sessionId) {
     );
     if (hasValue) answered += 1;
   });
-  const total = db.prepare('SELECT COUNT(*) AS n FROM questions WHERE active = 1').get().n;
+  const total = db.prepare("SELECT COUNT(*) AS n FROM questions WHERE active = 1 AND question_family = 'GENERAL'").get().n;
   return { total, answered, unanswered: Math.max(0, total - answered) };
 }
 
@@ -141,7 +141,7 @@ function finalizeSession(sessionId, options = {}) {
 
     // Grade from whatever the candidate had already saved to the server.
     // Nothing is invented; unanswered questions simply score zero.
-    const questions = db.prepare('SELECT * FROM questions WHERE active = 1').all()
+    const questions = db.prepare("SELECT * FROM questions WHERE active = 1 AND question_family = 'GENERAL'").all()
       .map((q) => ({ ...q, config: JSON.parse(q.config_json) }));
     const answers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(sessionId);
     const answersByQ = {};
@@ -161,13 +161,30 @@ function finalizeSession(sessionId, options = {}) {
       `UPDATE candidate_answers SET submitted_at = ? WHERE session_id = ? AND submitted_at IS NULL`
     ).run(submittedAt, sessionId);
 
-    db.prepare(`UPDATE candidates SET status = 'INTERVIEW_PENDING' WHERE id = ?`).run(candidate.id);
+    // An IQ test is a different product with a different lifecycle: sitting one
+    // does not put a candidate into the recruitment interview queue.
+    const assessment = session.assessment_id
+      ? db.prepare('SELECT * FROM assessments WHERE id = ?').get(session.assessment_id)
+      : null;
+    const isIqTest = !!assessment && assessment.assessment_type === 'IQ_TEST';
+    if (!isIqTest) {
+      db.prepare(`UPDATE candidates SET status = 'INTERVIEW_PENDING' WHERE id = ?`).run(candidate.id);
+    }
 
     db.prepare(
       `INSERT INTO scores (id, session_id, calc_marks, calc_max, calc_breakdown_json) VALUES (?,?,?,?,?)
        ON CONFLICT(session_id) DO UPDATE SET calc_marks=excluded.calc_marks, calc_max=excluded.calc_max,
          calc_breakdown_json=excluded.calc_breakdown_json`
     ).run(generateId('score'), sessionId, calcResult.marks, calcResult.max, JSON.stringify(calcResult.breakdown));
+
+    // IQ result, marked SERVER-SIDE from what was stored. Inside the same
+    // transaction and keyed by session, so a manual submit racing the expiry
+    // sweep can neither double-count nor produce two different results.
+    if (isIqTest) {
+      require('./iqScoring').recordIqResult(
+        db.prepare('SELECT * FROM assessment_sessions WHERE id = ?').get(sessionId)
+      );
+    }
 
     db.prepare(
       `INSERT INTO integrity_assessments (id, session_id, paste_events, focus_changes, largest_paste, risk_level, evidence_json)

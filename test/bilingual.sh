@@ -45,14 +45,14 @@ OPTION_QUESTION='{"type":"CALC","text":"Which city is the capital of France?","t
 
 # ===========================================================================
 c_head "MIGRATION — the seeded bank survives untouched"
-expect_eq "all 7 seeded questions are present" 7 "$(dbq 'SELECT COUNT(*) AS v FROM questions')"
-expect_eq "6 calculation questions" 6 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE type='CALC'")"
-expect_eq "1 essay question" 1 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE type='ESSAY'")"
+expect_eq "all 7 seeded recruitment questions are present" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE question_family='GENERAL'")"
+expect_eq "6 calculation questions" 6 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE type='CALC' AND question_family='GENERAL'")"
+expect_eq "1 essay question" 1 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE type='ESSAY' AND question_family='GENERAL'")"
 expect_eq "every question still has its English text" 0 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE text IS NULL OR text = ''")"
 expect_eq "every question still has its marking config" 0 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE config_json IS NULL OR config_json = ''")"
-expect_eq "no answer key was lost" 6 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE type='CALC' AND config_json LIKE '%expected%'")"
-expect_eq "Lao starts empty — nothing was auto-translated" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE text_lo IS NULL")"
-expect_eq "translation status defaults to MISSING" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE translation_status = 'MISSING'")"
+expect_eq "no answer key was lost" 6 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE type='CALC' AND question_family='GENERAL' AND config_json LIKE '%expected%'")"
+expect_eq "Lao starts empty — nothing was auto-translated" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE text_lo IS NULL AND question_family='GENERAL'")"
+expect_eq "translation status defaults to MISSING" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE translation_status = 'MISSING' AND question_family='GENERAL'")"
 expect_eq "nothing is archived by the migration" 0 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE COALESCE(archived,0) = 1")"
 expect_eq "sessions gained a language column defaulting to en" "en" "$(dbq "SELECT COALESCE((SELECT language FROM assessment_sessions LIMIT 1),'en') AS v")"
 
@@ -96,7 +96,7 @@ LAO_BAD_PART=$(vb '{"type":"CALC","text":"x","config":{"parts":[{"key":"a","labe
 expect_contains "a Lao overlay for a part that does not exist is rejected" 'does not exist' "$LAO_BAD_PART"
 LAO_BAD_OPT=$(vb '{"type":"CALC","text":"x","config":{"parts":[{"key":"a","label":"A","marks":1,"type":"choice","options":["Accept","Reject"],"expected":"Accept"}]},"configLo":{"parts":{"a":{"options":{"Maybe":"X"}}}}}')
 expect_contains "a Lao option that is not one of the options is rejected" 'not one of its options' "$LAO_BAD_OPT"
-QCOUNT_AFTER=$(dbq 'SELECT COUNT(*) AS v FROM questions')
+QCOUNT_AFTER=$(dbq "SELECT COUNT(*) AS v FROM questions WHERE question_family='GENERAL'")
 expect_eq "no invalid question was written" 8 "$QCOUNT_AFTER"
 
 c_head "EDIT"
@@ -472,8 +472,8 @@ expect_eq "an option with no label of its own reads as its value" "true" "$(json
 expect_eq "the service exports no key of any kind" "false" "$(jsonval "$TR" 'String(d.exportsKey)')"
 expect_not_contains "the service source carries no hardcoded key" "sk-ant" "$(cat src/lib/translation.js)"
 expect_not_contains "and no hardcoded Lao dictionary" "LAO_DICTIONARY" "$(cat src/lib/translation.js)"
-expect_not_contains "the browser bundle never names the provider key" "ANTHROPIC_API_KEY" "$(cat public/admin/app.js)"
-expect_not_contains "and the candidate bundle does not either" "ANTHROPIC" "$(cat public/exam/app.js)"
+expect_not_contains "the browser bundle never names the provider key" "OPENAI_API_KEY" "$(cat public/admin/app.js)"
+expect_not_contains "and the candidate bundle does not either" "OPENAI" "$(cat public/exam/app.js)"
 
 c_head "TRANSLATION ENDPOINT - authorisation"
 TRURL="$BASE/api/admin/questions/translate"
@@ -502,8 +502,9 @@ CONFIGURED=$(jsonval "$(http_body GET "$BASE/api/admin/questions/translate/limit
 expect_contains "the admin bank reports whether translation is available" 'translationConfigured' "$(http_body GET "$BASE/api/admin/questions" "$HR")"
 LIMITS_BODY=$(http_body GET "$BASE/api/admin/questions/translate/limits" "$HR")
 expect_contains "the limits are published to admins" 'questionChars' "$LIMITS_BODY"
-expect_not_contains "the limits response carries no key" 'ANTHROPIC' "$LIMITS_BODY"
-expect_not_contains "and no model or provider detail" 'api.anthropic.com' "$LIMITS_BODY"
+expect_not_contains "the limits response carries no key" 'OPENAI' "$LIMITS_BODY"
+expect_not_contains "and no model or provider detail" 'api.openai.com' "$LIMITS_BODY"
+expect_not_contains "and does not name the model either" 'gpt-' "$LIMITS_BODY"
 
 if [ "$CONFIGURED" = "true" ]; then
   c_head "TRANSLATION - REAL provider call (credentials are configured)"
@@ -516,7 +517,8 @@ if [ "$CONFIGURED" = "true" ]; then
   expect_eq "the result is declared MACHINE output" "true" "$(jsonval "$REAL" 'String(d.machineTranslated)')"
   expect_eq "and is offered as a DRAFT, never APPROVED" "DRAFT" "$(jsonval "$REAL" 'd.translationStatus')"
   expect_contains "the numbers in the question survived" "1000" "$REALQ"
-  expect_not_contains "the response leaks no provider metadata" 'anthropic' "$REAL"
+  expect_not_contains "the response leaks no provider metadata" 'openai' "$REAL"
+  expect_not_contains "and no model name" 'gpt-' "$REAL"
 else
   c_head "TRANSLATION - provider NOT configured on this server"
   UNCONF=$(post_json POST "$TRURL" "$HR" "$TRBODY")
@@ -524,8 +526,8 @@ else
   expect_contains "and says it is a configuration problem" 'not configured' "$UNCONF"
   expect_eq "the response says so in a machine-readable way" "false" "$(jsonval "$UNCONF" 'String(d.configured)')"
   expect_not_contains "no translated text is invented" 'question":"' "$UNCONF"
-  expect_not_contains "and the key name is never echoed" 'ANTHROPIC' "$UNCONF"
-  printf '  [33mNOTE[0m  ANTHROPIC_API_KEY is not set, so the live provider path was NOT exercised.\n'
+  expect_not_contains "and the key name is never echoed" 'OPENAI' "$UNCONF"
+  printf '  [33mNOTE[0m  OPENAI_API_KEY is not set, so the live provider path was NOT exercised.\n'
 fi
 
 c_head "TRANSLATION COST CONTROL - the per-admin ceiling is real"
@@ -539,7 +541,7 @@ done
 check "an admin hitting translate repeatedly is rate limited" "$([ "$SEEN_429" = "1" ] && echo 0 || echo 1)" "no 429 within 45 requests"
 RL=$(post_json POST "$TRURL" "$HR" "$TRBODY")
 expect_contains "and is told to wait rather than shown an error page" 'Too many translation requests' "$RL"
-expect_not_contains "the rate-limit message leaks no provider detail" 'anthropic' "$RL"
+expect_not_contains "the rate-limit message leaks no provider detail" 'openai' "$RL"
 expect_eq "a DIFFERENT admin still has their own allowance" 0 "$(post_json_code POST "$TRURL" "$SUPER" "$TRBODY" | grep -c '^429$')"
 expect_eq "the server keeps a per-user in-flight guard against double clicks" 1 "$(grep -c 'translationsInFlight' src/routes/admin/questions.js | awk '{print ($1>0)?1:0}')"
 expect_contains "which answers 409 rather than paying for a second call" '409' "$(grep -A 2 'translationsInFlight.has' src/routes/admin/questions.js)"

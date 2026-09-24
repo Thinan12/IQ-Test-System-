@@ -64,7 +64,7 @@ c_head "6. Expired token rejected"
 # The assessment owns the invitation window, so the link is issued with a
 # 1-minute expiry and then pushed into the past directly — the invitation
 # window is validated on every request, not only at issue time.
-EXP_ASMT=$(dbq 'SELECT id AS v FROM assessments ORDER BY created_at LIMIT 1')
+EXP_ASMT=$(dbq "SELECT id AS v FROM assessments WHERE assessment_type='GENERAL_ASSESSMENT' ORDER BY created_at LIMIT 1")
 http_body PATCH "$BASE/api/admin/assessments/$EXP_ASMT" "$SUPER" '{"link_expiry_minutes":1}' > /dev/null
 EXP_CAND=$(http_body POST "$BASE/api/admin/candidates" "$HR" '{"fullName":"Expiry Test","applicationType":"NORMAL","iq":110,"education":"Bachelor Degree"}')
 EXP_ID=$(jsonval "$EXP_CAND" 'd.id')

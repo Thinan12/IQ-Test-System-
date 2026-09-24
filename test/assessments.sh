@@ -19,8 +19,9 @@ A="$BASE/api/admin/assessments"
 
 # ===========================================================================
 c_head "MIGRATION — the existing exam becomes an assessment, unchanged"
-expect_eq "exactly one assessment exists after migration" 1 "$(dbq 'SELECT COUNT(*) AS v FROM assessments')"
-DEF=$(dbq 'SELECT id AS v FROM assessments ORDER BY created_at LIMIT 1')
+expect_eq "exactly one recruitment assessment exists after migration" 1 "$(dbq "SELECT COUNT(*) AS v FROM assessments WHERE assessment_type='GENERAL_ASSESSMENT'")"
+expect_eq "alongside the seeded IQ test" 1 "$(dbq "SELECT COUNT(*) AS v FROM assessments WHERE assessment_type='IQ_TEST'")"
+DEF=$(dbq "SELECT id AS v FROM assessments WHERE assessment_type='GENERAL_ASSESSMENT' ORDER BY created_at LIMIT 1")
 expect_eq "it is active" 1 "$(dbq "SELECT active AS v FROM assessments WHERE id='$DEF'")"
 expect_eq "and not archived" 0 "$(dbq "SELECT COALESCE(archived,0) AS v FROM assessments WHERE id='$DEF'")"
 expect_eq "it carries the existing exam duration" 45 "$(dbq "SELECT duration_minutes AS v FROM assessments WHERE id='$DEF'")"
@@ -28,7 +29,7 @@ expect_eq "it carries the existing invitation expiry" 10 "$(dbq "SELECT link_exp
 expect_eq "it carries the existing pass threshold" 70 "$(dbq "SELECT pass_threshold AS v FROM assessments WHERE id='$DEF'")"
 expect_eq "scoring components add up to the total" 100 "$(dbq "SELECT calc_max+written_max+interview_max AS v FROM assessments WHERE id='$DEF'")"
 expect_eq "every active question was attached" 7 "$(dbq "SELECT COUNT(*) AS v FROM assessment_questions WHERE assessment_id='$DEF'")"
-expect_eq "no question row was copied — they are referenced" 7 "$(dbq 'SELECT COUNT(*) AS v FROM questions')"
+expect_eq "no question row was copied — they are referenced" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE question_family='GENERAL'")"
 expect_eq "the attached questions all resolve to real questions" 0 \
   "$(dbq "SELECT COUNT(*) AS v FROM assessment_questions aq LEFT JOIN questions q ON q.id=aq.question_id WHERE aq.assessment_id='$DEF' AND q.id IS NULL")"
 expect_eq "the essay is attached last, after the calculations" "ESSAY" \
@@ -70,7 +71,7 @@ expect_eq "components that do not add up to the total are refused" 400 \
   "$(http_code POST "$A" "$SUPER" '{"name":"Bad sum","calc_max":10,"written_max":10,"interview_max":10,"total_max":100}')"
 expect_eq "a non-existent question is refused" 400 "$(http_code POST "$A" "$SUPER" '{"name":"Ghost question","questionIds":["q_does_not_exist"]}')"
 expect_eq "the same question twice is refused" 400 \
-  "$(http_code POST "$A" "$SUPER" "{\"name\":\"Doubled\",\"questionIds\":[\"$(dbq 'SELECT id AS v FROM questions LIMIT 1')\",\"$(dbq 'SELECT id AS v FROM questions LIMIT 1')\"]}")"
+  "$(http_code POST "$A" "$SUPER" "{\"name\":\"Doubled\",\"questionIds\":[\"$(dbq "SELECT id AS v FROM questions WHERE question_family='GENERAL' LIMIT 1")\",\"$(dbq "SELECT id AS v FROM questions WHERE question_family='GENERAL' LIMIT 1")\"]}")"
 expect_eq "an unknown eligibility policy is refused" 400 "$(http_code POST "$A" "$SUPER" '{"name":"Ghost policy","eligibility_rules_id":9999}')"
 expect_eq "not one of the refused configurations was written" "$BEFORE_COUNT" "$(dbq 'SELECT COUNT(*) AS v FROM assessments')"
 expect_contains "the refusal explains the sum in plain words" "must equal the total marks" \
@@ -80,7 +81,7 @@ expect_contains "the refusal names the clashing assessment rule" "already uses t
 
 # ===========================================================================
 c_head "CREATE + VIEW — a new assessment with a chosen question set and order"
-Q_IDS=$(dbq "SELECT GROUP_CONCAT(id) AS v FROM (SELECT id FROM questions WHERE type='CALC' ORDER BY order_index LIMIT 3)")
+Q_IDS=$(dbq "SELECT GROUP_CONCAT(id) AS v FROM (SELECT id FROM questions WHERE type='CALC' AND question_family='GENERAL' ORDER BY order_index LIMIT 3)")
 Q1=$(printf '%s' "$Q_IDS" | cut -d, -f1)
 Q2=$(printf '%s' "$Q_IDS" | cut -d, -f2)
 Q3=$(printf '%s' "$Q_IDS" | cut -d, -f3)
@@ -156,7 +157,7 @@ expect_eq "the eligibility policy was copied" 1 "$(dbq "SELECT eligibility_rules
 expect_eq "the question references were copied" 3 "$(dbq "SELECT COUNT(*) AS v FROM assessment_questions WHERE assessment_id='$DUP_ID'")"
 expect_eq "in the same order" "$Q3,$Q2,$Q1" \
   "$(jsonval "$(http_body GET "$A/$DUP_ID" "$SUPER")" 'd.assessment.questions.map(q=>q.id).join(",")')"
-expect_eq "the copy references the same question rows — nothing was cloned" 7 "$(dbq 'SELECT COUNT(*) AS v FROM questions')"
+expect_eq "the copy references the same question rows — nothing was cloned" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE question_family='GENERAL'")"
 expect_eq "no candidate session came with the copy" 0 "$(dbq "SELECT COUNT(*) AS v FROM assessment_sessions WHERE assessment_id='$DUP_ID'")"
 expect_eq "no invitation link came with the copy" 0 "$(dbq "SELECT COUNT(*) AS v FROM assessment_links WHERE assessment_id='$DUP_ID'")"
 expect_eq "duplicating is audited" 1 "$(dbq "SELECT COUNT(*) AS v FROM audit_logs WHERE action='ASSESSMENT_DUPLICATED' AND target='$DUP_ID'")"
@@ -316,7 +317,7 @@ expect_eq "the completed candidate keeps every answer they gave" "$ANSWERS_BEFOR
 expect_eq "including answers to questions the assessment no longer asks" 1 \
   "$(dbq "SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END AS v FROM candidate_answers WHERE session_id='$HIST_SESSION' AND question_id='$FIRST_Q'")"
 expect_eq "their marks are unchanged" "$MARKS_BEFORE" "$(dbq "SELECT final_marks AS v FROM scores WHERE session_id='$HIST_SESSION'")"
-expect_eq "no question was deleted from the bank" 7 "$(dbq 'SELECT COUNT(*) AS v FROM questions')"
+expect_eq "no question was deleted from the bank" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE question_family='GENERAL'")"
 
 # ===========================================================================
 c_head "AUDIT TRAIL — every state change is attributable"

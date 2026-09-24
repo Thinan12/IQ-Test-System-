@@ -100,7 +100,7 @@ expect_eq "a revoked link cannot be extended" 409 "$(http_code POST "$BASE$EC/li
 c_head "P2. INVITATION EXPIRY IS CONFIGURABLE AND PER-LINK"
 # Since assessment management, the ASSESSMENT owns the invitation window; the
 # value in Settings is only the default a new assessment starts with.
-ASMT=$(dbq 'SELECT id AS v FROM assessments ORDER BY created_at LIMIT 1')
+ASMT=$(dbq "SELECT id AS v FROM assessments WHERE assessment_type='GENERAL_ASSESSMENT' ORDER BY created_at LIMIT 1")
 http_body PATCH "$BASE/api/admin/assessments/$ASMT" "$SUPER" '{"link_expiry_minutes":5}' > /dev/null
 L5=$(jsonval "$(http_body POST "$BASE/api/admin/candidates/$C4/links" "$HR")" 'd.id')
 EXP5=$(dbq "SELECT CAST((julianday(expires_at) - julianday(created_at)) * 24 * 60 + 0.5 AS INTEGER) AS v FROM assessment_links WHERE id = '$L5'")

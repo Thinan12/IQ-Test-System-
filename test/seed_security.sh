@@ -30,6 +30,14 @@ run_seed() {
   return $?
 }
 
+count_family() { # count_family <GENERAL|IQ> — questions in one bank
+  ( cd "$BACKEND_DIR" && "$NODE" -e "
+    const D=require('better-sqlite3');
+    let db; try { db=new D(process.argv[1],{readonly:true,fileMustExist:true}); } catch(e){ console.log('NODB'); process.exit(0); }
+    try { console.log(db.prepare('SELECT COUNT(*) c FROM questions WHERE question_family = ?').get(process.argv[2]).c); } catch(e){ console.log('NOTABLE'); }
+  " "$SEED_DB" "$1" )
+}
+
 count() { # count <table>
   ( cd "$BACKEND_DIR" && "$NODE" -e "
     const D=require('better-sqlite3');
@@ -76,7 +84,8 @@ c_head "B + F. A strong DEMO_PASSWORD is accepted and seeds the reference data"
 run_seed good.db "$STRONG"; RC=$?
 expect_eq "seeding succeeds" 0 "$RC"
 expect_eq "6 admin accounts created" 6 "$(count users)"
-expect_eq "7 questions created" 7 "$(count questions)"
+expect_eq "7 recruitment questions created" 7 "$(count_family GENERAL)"
+expect_eq "18 IQ questions created" 18 "$(count_family IQ)"
 expect_eq "interview questions created" 4 "$(count interview_questions)"
 expect_eq "interview criteria created" 4 "$(count interview_criteria)"
 expect_eq "scholarship policies created" 4 "$(count scholarship_policies)"
@@ -142,7 +151,8 @@ FIRST_USERS=$(count users)
 ( cd "$SEED_DIR" && DEMO_PASSWORD="$STRONG" DATABASE_PATH="$SEED_DB" JWT_SECRET="$JWT_SECRET" \
     "$NODE" "$NATIVE_BACKEND/src/seed.js" ) > "$SEED_OUT" 2>&1
 expect_eq "re-running does not duplicate users" "$FIRST_USERS" "$(count users)"
-expect_eq "re-running does not duplicate questions" 7 "$(count questions)"
+expect_eq "re-running does not duplicate questions" 7 "$(count_family GENERAL)"
+expect_eq "nor duplicate the IQ bank" 18 "$(count_family IQ)"
 expect_contains "it reports questions as already seeded" 'already seeded' "$(cat "$SEED_OUT")"
 rm -rf "$SEED_DIR"
 

@@ -13,6 +13,8 @@ const { generateId } = require('../../lib/tokens');
 const { auditFromReq } = require('../../lib/audit');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 
+const { scoringConfigFor, validateScoringConfig } = require('../../lib/iqScoring');
+
 const router = express.Router();
 router.use(requireAuth);
 
@@ -38,6 +40,8 @@ function questionsFor(assessmentId) {
   ).all(assessmentId);
 }
 
+const ASSESSMENT_TYPES = ['GENERAL_ASSESSMENT', 'IQ_TEST'];
+
 function shape(a, { withQuestions = true } = {}) {
   const questions = withQuestions ? questionsFor(a.id) : [];
   const usage = db.prepare('SELECT COUNT(*) AS n FROM assessment_sessions WHERE assessment_id = ?').get(a.id).n;
@@ -52,10 +56,31 @@ function shape(a, { withQuestions = true } = {}) {
     // rather than silently mis-scoring.
     questionMarks: questions.reduce((sum, q) => sum + (q.max_marks || 0), 0),
     sessionCount: usage,
+    assessmentType: a.assessment_type || 'GENERAL_ASSESSMENT',
+    // Resolved scoring configuration for an IQ test, defaults filled in, so an
+    // admin sees what a candidate would actually be judged by. NULL for a
+    // general assessment, which is scored by the 30/30/40 recruitment model.
+    iqScoring: (a.assessment_type === 'IQ_TEST') ? scoringConfigFor(a) : null,
   };
 }
 
 function validate(body, { partial = false, existing = null, id = null } = {}) {
+  // Product type. An existing assessment cannot change type: sessions already
+  // sat under it were scored by that product's rules, and flipping the type
+  // would re-interpret finished attempts.
+  if (body.assessmentType !== undefined) {
+    const t = String(body.assessmentType).toUpperCase();
+    if (!ASSESSMENT_TYPES.includes(t)) {
+      return ['assessmentType must be one of: ' + ASSESSMENT_TYPES.join(', ')];
+    }
+    if (existing && t !== (existing.assessment_type || 'GENERAL_ASSESSMENT')) {
+      return ['An assessment cannot change type once it exists. Create a new one instead.'];
+    }
+  }
+  if (body.iqScoring !== undefined && body.iqScoring !== null) {
+    const errs = validateScoringConfig(body.iqScoring);
+    if (errs.length) return errs;
+  }
   const errors = [];
   const val = (key) => (body[key] !== undefined ? body[key] : (existing ? existing[key] : undefined));
 
@@ -112,10 +137,23 @@ function validate(body, { partial = false, existing = null, id = null } = {}) {
       if (new Set(body.questionIds).size !== body.questionIds.length) {
         errors.push('The same question cannot be added twice.');
       }
+      // A question set must belong to the same product as the assessment. An
+      // IQ item lives in the same table as a recruitment question (it is a CALC
+      // question with one choice part), so without this check an IQ item could
+      // be attached to a recruitment assessment and be marked as part of the
+      // /30 calculation section — or a recruitment question could be attached
+      // to an IQ test and be counted towards a reasoning score.
+      const type = body.assessmentType !== undefined
+        ? String(body.assessmentType).toUpperCase()
+        : ((existing && existing.assessment_type) || 'GENERAL_ASSESSMENT');
+      const wantedFamily = type === 'IQ_TEST' ? 'IQ' : 'GENERAL';
       body.questionIds.forEach((qid) => {
-        const q = db.prepare('SELECT id, archived FROM questions WHERE id = ?').get(qid);
+        const q = db.prepare('SELECT id, archived, question_family FROM questions WHERE id = ?').get(qid);
         if (!q) errors.push(`Question "${qid}" does not exist.`);
         else if (q.archived) errors.push(`Question "${qid}" is archived and cannot be added.`);
+        else if ((q.question_family || 'GENERAL') !== wantedFamily) {
+          errors.push(`Question "${qid}" is not a ${wantedFamily === 'IQ' ? 'IQ' : 'recruitment'} question and cannot be added to this assessment.`);
+        }
       });
     }
   }
@@ -175,6 +213,8 @@ router.post('/', requireRole(...EDITORS), (req, res) => {
     pass_threshold: b.pass_threshold !== undefined ? Number(b.pass_threshold)
       : (cfg.pass_threshold != null ? cfg.pass_threshold : 70),
     eligibility_rules_id: b.eligibility_rules_id !== undefined ? Number(b.eligibility_rules_id) : 1,
+    assessment_type: b.assessmentType ? String(b.assessmentType).toUpperCase() : 'GENERAL_ASSESSMENT',
+    iq_scoring_json: b.iqScoring ? JSON.stringify(b.iqScoring) : null,
   };
   const errors = validate({ ...b, ...payload }, {});
   if (errors.length) return res.status(400).json({ error: errors[0], errors });
@@ -184,15 +224,17 @@ router.post('/', requireRole(...EDITORS), (req, res) => {
   db.transaction(() => {
     db.prepare(
       `INSERT INTO assessments (id, name, description, active, archived, duration_minutes, link_expiry_minutes,
-         calc_max, written_max, interview_max, total_max, pass_threshold, eligibility_rules_id, created_by)
+         calc_max, written_max, interview_max, total_max, pass_threshold, eligibility_rules_id,
+         assessment_type, iq_scoring_json, created_by)
        VALUES (@id,@name,@description,@active,0,@duration_minutes,@link_expiry_minutes,
-         @calc_max,@written_max,@interview_max,@total_max,@pass_threshold,@eligibility_rules_id,@createdBy)`
+         @calc_max,@written_max,@interview_max,@total_max,@pass_threshold,@eligibility_rules_id,
+         @assessment_type,@iq_scoring_json,@createdBy)`
     ).run({ id, ...payload, active: b.active === false ? 0 : 1, createdBy: req.user.name });
     setQuestions(id, questionIds);
   })();
 
   auditFromReq(req, 'ASSESSMENT_CREATED', id, null, {
-    name: payload.name, questions: questionIds.length,
+    name: payload.name, questions: questionIds.length, assessmentType: payload.assessment_type,
     duration: payload.duration_minutes, passThreshold: payload.pass_threshold,
   });
   res.status(201).json({ id, assessment: shape(findAssessment(id)) });
@@ -220,6 +262,12 @@ router.patch('/:id', requireRole(...EDITORS), (req, res) => {
     total_max: b.total_max !== undefined ? Number(b.total_max) : a.total_max,
     pass_threshold: b.pass_threshold !== undefined ? Number(b.pass_threshold) : a.pass_threshold,
     eligibility_rules_id: b.eligibility_rules_id !== undefined ? Number(b.eligibility_rules_id) : a.eligibility_rules_id,
+    // The scoring model can be retuned; attempts already sat keep the snapshot
+    // they were judged under (see iq_results.scoring_model_json), so nobody is
+    // ever re-judged by a model that did not exist when they took the test.
+    iq_scoring_json: b.iqScoring !== undefined
+      ? (b.iqScoring ? JSON.stringify(b.iqScoring) : null)
+      : a.iq_scoring_json,
   };
 
   const beforeQuestions = questionsFor(a.id).map((q) => q.id);
@@ -229,6 +277,7 @@ router.patch('/:id', requireRole(...EDITORS), (req, res) => {
          duration_minutes=@duration_minutes, link_expiry_minutes=@link_expiry_minutes,
          calc_max=@calc_max, written_max=@written_max, interview_max=@interview_max,
          total_max=@total_max, pass_threshold=@pass_threshold, eligibility_rules_id=@eligibility_rules_id,
+         iq_scoring_json=@iq_scoring_json,
          updated_at=datetime('now') WHERE id=@id`
     ).run({ id: a.id, ...next });
     if (b.questionIds !== undefined) setQuestions(a.id, b.questionIds);

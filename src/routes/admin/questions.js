@@ -166,8 +166,8 @@ function adminQuestion(q) {
 router.get('/', requireRole(...QUESTION_READERS), (req, res) => {
   const showArchived = String(req.query.archived || '') === '1';
   const rows = showArchived
-    ? db.prepare('SELECT * FROM questions WHERE COALESCE(archived,0) = 1 ORDER BY type, order_index').all()
-    : db.prepare('SELECT * FROM questions WHERE COALESCE(archived,0) = 0 ORDER BY type, order_index').all();
+    ? db.prepare("SELECT * FROM questions WHERE COALESCE(archived,0) = 1 AND question_family = 'GENERAL' ORDER BY type, order_index").all()
+    : db.prepare("SELECT * FROM questions WHERE COALESCE(archived,0) = 0 AND question_family = 'GENERAL' ORDER BY type, order_index").all();
   // The admin UI needs to know whether the Auto-translate action can work.
   // It is told a BOOLEAN and nothing else — never the key, the provider or
   // any part of the configuration.
@@ -239,7 +239,7 @@ router.get('/translate/limits', requireRole(...QUESTION_READERS), (req, res) => 
 });
 
 router.get('/:id', requireRole(...QUESTION_READERS), (req, res) => {
-  const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(req.params.id);
+  const q = db.prepare("SELECT * FROM questions WHERE id = ? AND question_family = 'GENERAL'").get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   res.json({ question: adminQuestion(q) });
 });
@@ -284,7 +284,7 @@ router.post('/', requireRole(...QUESTION_EDITORS), (req, res) => {
 });
 
 router.patch('/:id', requireRole(...QUESTION_EDITORS), (req, res) => {
-  const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(req.params.id);
+  const q = db.prepare("SELECT * FROM questions WHERE id = ? AND question_family = 'GENERAL'").get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   const b = req.body || {};
 
@@ -360,7 +360,7 @@ router.patch('/:id', requireRole(...QUESTION_EDITORS), (req, res) => {
 // them, so a completed assessment would lose the question it was marked on.
 // Archiving withdraws a question from new assessments and is reversible.
 router.post('/:id/archive', requireRole(...QUESTION_EDITORS), (req, res) => {
-  const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(req.params.id);
+  const q = db.prepare("SELECT * FROM questions WHERE id = ? AND question_family = 'GENERAL'").get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   if (q.archived) return res.status(409).json({ error: 'This question is already archived.' });
   db.prepare(`UPDATE questions SET archived = 1, archived_at = datetime('now'), archived_by = ?, updated_at = datetime('now') WHERE id = ?`)
@@ -371,7 +371,7 @@ router.post('/:id/archive', requireRole(...QUESTION_EDITORS), (req, res) => {
 });
 
 router.post('/:id/restore', requireRole(...QUESTION_EDITORS), (req, res) => {
-  const q = db.prepare('SELECT * FROM questions WHERE id = ?').get(req.params.id);
+  const q = db.prepare("SELECT * FROM questions WHERE id = ? AND question_family = 'GENERAL'").get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   if (!q.archived) return res.status(409).json({ error: 'This question is not archived.' });
   db.prepare(`UPDATE questions SET archived = 0, archived_at = NULL, archived_by = NULL, updated_at = datetime('now') WHERE id = ?`).run(q.id);

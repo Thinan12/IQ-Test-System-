@@ -42,7 +42,7 @@ expect_eq "the flag is stored against this session and this question" 1 \
   "$(dbq "SELECT flagged AS v FROM candidate_answers WHERE session_id = '$S1' AND question_id = '$QA'")"
 expect_eq "a flag timestamp is recorded" 0 \
   "$(dbq "SELECT CASE WHEN flagged_at IS NULL OR flagged_at = '' THEN 1 ELSE 0 END AS v FROM candidate_answers WHERE session_id = '$S1' AND question_id = '$QA'")"
-expect_eq "flagging created no duplicate question row" 7 "$(dbq 'SELECT COUNT(*) AS v FROM questions')"
+expect_eq "flagging created no duplicate question row" 7 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE question_family='GENERAL'")"
 expect_eq "and no second answer row for the same question" 1 \
   "$(dbq "SELECT COUNT(*) AS v FROM candidate_answers WHERE session_id = '$S1' AND question_id = '$QA'")"
 

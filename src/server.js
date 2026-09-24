@@ -98,6 +98,7 @@ app.use('/api/admin/settings/data-management', require('./routes/admin/dataManag
 app.use('/api/admin/users', require('./routes/admin/users'));
 app.use('/api/admin/exam-control', require('./routes/admin/examControl'));
 app.use('/api/admin/assessments', require('./routes/admin/assessments'));
+app.use('/api/admin/iq', require('./routes/admin/iq'));
 app.use('/api/admin', require('./routes/admin/misc'));
 app.use('/api/exam', require('./routes/exam'));
 
@@ -114,6 +115,12 @@ app.get('/admin*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public
 // Public candidate exam SPA — contains no admin code, no answer keys, no other candidate data.
 app.use('/exam', express.static(path.join(__dirname, '..', 'public', 'exam')));
 app.get('/exam/:token', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'exam', 'index.html')));
+
+// IQ test candidate portal. A separate path so an IQ invitation opens the IQ
+// experience, with no way to confuse it with a recruitment assessment link.
+// The token is the same opaque random string and carries no candidate data.
+app.use('/iq', express.static(path.join(__dirname, '..', 'public', 'iq')));
+app.get('/iq/:token', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'iq', 'index.html')));
 
 app.get('/', (req, res) => res.redirect('/admin'));
 

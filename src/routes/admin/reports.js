@@ -32,7 +32,7 @@ function fullCandidateData(id) {
   const session = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ? ORDER BY started_at DESC LIMIT 1').get(c.id);
   const scores = session ? db.prepare('SELECT * FROM scores WHERE session_id = ?').get(session.id) : null;
   const integrity = session ? db.prepare('SELECT * FROM integrity_assessments WHERE session_id = ?').get(session.id) : null;
-  const questions = db.prepare(`SELECT * FROM questions WHERE type='CALC' AND active=1 ORDER BY order_index`).all();
+  const questions = db.prepare(`SELECT * FROM questions WHERE type='CALC' AND active=1 AND question_family='GENERAL' ORDER BY order_index`).all();
   const breakdown = scores && scores.calc_breakdown_json ? JSON.parse(scores.calc_breakdown_json) : [];
   return { candidate: c, eligibility: elig, session, scores, integrity, questions, breakdown };
 }

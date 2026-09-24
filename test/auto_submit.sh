@@ -17,7 +17,7 @@ HR=$(login_token hradmin@lalco.demo "$DEMO_PASSWORD")
 [ -n "$SUPER" ] || { c_red "could not log in"; server_log; exit 1; }
 
 # 1-minute exam, 10-minute invitation link. The assessment owns both timers.
-AS_ASMT=$(dbq 'SELECT id AS v FROM assessments ORDER BY created_at LIMIT 1')
+AS_ASMT=$(dbq "SELECT id AS v FROM assessments WHERE assessment_type='GENERAL_ASSESSMENT' ORDER BY created_at LIMIT 1")
 http_body PATCH "$BASE/api/admin/assessments/$AS_ASMT" "$SUPER" '{"duration_minutes":1,"link_expiry_minutes":10}' > /dev/null
 expect_eq "assessment duration configured to 1 minute" 1 "$(dbq "SELECT duration_minutes AS v FROM assessments WHERE id = '$AS_ASMT'")"
 
@@ -69,8 +69,8 @@ expect_eq "answered count recorded as 3" 3 "$(dbq "SELECT answered_count AS v FR
 expect_eq "unanswered count recorded as 4" 4 "$(dbq "SELECT unanswered_count AS v FROM assessment_sessions WHERE id = '$SESSION_A'")"
 expect_eq "no answers were invented" 3 "$(dbq "SELECT COUNT(*) AS v FROM candidate_answers WHERE session_id = '$SESSION_A'")"
 expect_eq "a result exists" 1 "$(dbq "SELECT COUNT(*) AS v FROM scores WHERE session_id = '$SESSION_A'")"
-EXPECTED_PARTIAL=$(dbq "SELECT COALESCE(SUM(max_marks),0) AS v FROM (SELECT max_marks FROM questions WHERE type='CALC' AND active=1 ORDER BY order_index LIMIT 3)")
-CALC_TOTAL=$(dbq "SELECT COALESCE(SUM(max_marks),0) AS v FROM questions WHERE type='CALC' AND active=1")
+EXPECTED_PARTIAL=$(dbq "SELECT COALESCE(SUM(max_marks),0) AS v FROM (SELECT max_marks FROM questions WHERE type='CALC' AND active=1 AND question_family='GENERAL' ORDER BY order_index LIMIT 3)")
+CALC_TOTAL=$(dbq "SELECT COALESCE(SUM(max_marks),0) AS v FROM questions WHERE type='CALC' AND active=1 AND question_family='GENERAL'")
 expect_eq "only the 3 answered questions scored (full marks on those)" "$EXPECTED_PARTIAL" "$(dbq "SELECT calc_marks AS v FROM scores WHERE session_id = '$SESSION_A'")"
 check "the partial score is below the full calculation total ($EXPECTED_PARTIAL of $CALC_TOTAL)" "$([ "$EXPECTED_PARTIAL" -lt "$CALC_TOTAL" ] && echo 0 || echo 1)"
 expect_eq "question timing was finalized" 0 "$(dbq "SELECT COUNT(*) AS v FROM candidate_answers WHERE session_id = '$SESSION_A' AND submitted_at IS NULL")"

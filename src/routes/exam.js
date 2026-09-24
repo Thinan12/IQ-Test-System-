@@ -32,6 +32,11 @@ function sanitizeQuestionForCandidate(q, language) {
     // Lets the portal say "Lao translation not available" rather than showing
     // English while implying it is Lao.
     laoUnavailable: t.laoMissing,
+    // The reasoning category of an IQ question. Shown to the candidate on
+    // purpose ("Numerical reasoning"), so it is not sensitive: it says what
+    // KIND of question this is, never what the answer is. NULL for a
+    // recruitment question, which has no reasoning category.
+    category: q.iq_category || undefined,
   };
 
   if (q.type === 'CALC') {
@@ -123,8 +128,8 @@ function respondWithCandidateContext(req, res, link, session) {
           WHERE aq.assessment_id = ? AND q.active = 1 AND COALESCE(q.archived,0) = 0`
       ).get(assessment.id).n
     : 0;
-  const calcCount = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE type='CALC' AND active=1`).get().n;
-  const essayCount = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE type='ESSAY' AND active=1`).get().n;
+  const calcCount = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE type='CALC' AND active=1 AND question_family='GENERAL'`).get().n;
+  const essayCount = db.prepare(`SELECT COUNT(*) AS n FROM questions WHERE type='ESSAY' AND active=1 AND question_family='GENERAL'`).get().n;
   res.json({
     candidateName: c.full_name,
     // The LALCO ID is released only once a session exists — that is, only after
@@ -140,6 +145,10 @@ function respondWithCandidateContext(req, res, link, session) {
     // before any session exists, so the very first screen a candidate sees is
     // already in the right language. They can still switch.
     linkLanguage: normaliseLanguage(link.language),
+    // Which product this invitation is for, so the portal knows whether to
+    // present a recruitment assessment or an IQ test. It carries no answer
+    // key, no marking rule and no internal id.
+    assessmentType: assessment ? (assessment.assessment_type || 'GENERAL_ASSESSMENT') : 'GENERAL_ASSESSMENT',
     session: session ? {
       // `status` is what the candidate's portal keys off: SUBMITTED for a manual
       // submission, AUTO_SUBMITTED when the server finalized it on time expiry.
@@ -232,6 +241,7 @@ router.post('/:token/start', (req, res) => {
   audit({ userName: 'Candidate (public exam)', role: 'CANDIDATE', action: 'Assessment started', target: c.code, ip: req.ip });
   res.json({
     started: true, expiresAt, scheduledEndAt: expiresAt, language: startLanguage,
+    assessmentType: assessment ? (assessment.assessment_type || 'GENERAL_ASSESSMENT') : 'GENERAL_ASSESSMENT',
     // Echoed back so the submission receipt can identify the candidate without
     // needing a page reload to repopulate it.
     candidateCode: c.code,
@@ -288,6 +298,16 @@ function requireActiveSession(req, res, next) {
   next();
 }
 
+// Which bank this sitting draws on. An IQ item is a CALC question with one
+// choice part, so family is the only thing separating the two products inside
+// the questions table.
+function familyForSession(session) {
+  const asmt = session.assessment_id
+    ? db.prepare('SELECT assessment_type FROM assessments WHERE id = ?').get(session.assessment_id)
+    : null;
+  return asmt && asmt.assessment_type === 'IQ_TEST' ? 'IQ' : 'GENERAL';
+}
+
 // The questions this assessment actually asks, in the order it asks them.
 // Falls back to "every active question" for a session with no assessment
 // (a database predating assessment management). This is also the authority on
@@ -305,7 +325,11 @@ function questionsForSession(session) {
   // so completed assessments keep referencing it.
   return attached.length
     ? attached
-    : db.prepare(`SELECT * FROM questions WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`).all();
+    : db.prepare(
+        `SELECT * FROM questions
+          WHERE active = 1 AND COALESCE(archived,0) = 0 AND question_family = ?
+          ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`
+      ).all(familyForSession(session));
 }
 
 // ---- Get question list (sanitized) + current answers for review/navigation ----
@@ -313,8 +337,12 @@ router.get('/:token/questions', requireActiveSession, (req, res) => {
   const questions = questionsForSession(req.session_);
   const answers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(req.session_.id);
   const lang = req.session_.language || DEFAULT_LANGUAGE;
+  const asmt = req.session_.assessment_id
+    ? db.prepare('SELECT assessment_type FROM assessments WHERE id = ?').get(req.session_.assessment_id)
+    : null;
   res.json({
     language: lang,
+    assessmentType: asmt ? (asmt.assessment_type || 'GENERAL_ASSESSMENT') : 'GENERAL_ASSESSMENT',
     questions: questions.map((q) => sanitizeQuestionForCandidate(q, lang)),
     answered: answers.filter((a) => a.answer_json && a.answer_json !== '{}').map((a) => a.question_id),
     // Flags travel with the question list, so they survive a reload, a
@@ -326,7 +354,8 @@ router.get('/:token/questions', requireActiveSession, (req, res) => {
 
 // ---- Get one question (sanitized) with any previously saved raw answer for prefill ----
 router.get('/:token/question/:qid', requireActiveSession, (req, res) => {
-  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND active = 1').get(req.params.qid);
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND active = 1 AND question_family = ?')
+    .get(req.params.qid, familyForSession(req.session_));
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   let ans = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ? AND question_id = ?').get(req.session_.id, q.id);
   if (!ans) {
@@ -427,7 +456,8 @@ router.get('/:token/flags', requireActiveSession, (req, res) => {
 // ---- Save / autosave an answer ----
 router.post('/:token/answer', requireActiveSession, (req, res) => {
   const { questionId, answer, timeSpentDeltaSeconds } = req.body || {};
-  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND active = 1').get(questionId);
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND active = 1 AND question_family = ?')
+    .get(questionId, familyForSession(req.session_));
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   const existing = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ? AND question_id = ?').get(req.session_.id, questionId);
   const now = new Date().toISOString();

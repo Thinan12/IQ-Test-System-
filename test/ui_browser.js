@@ -911,7 +911,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // produces the Lao, or the not-configured path is proved instead and the
     // live path is reported as unproven.
     head('Automatic translation \u2014 real admin UI, real endpoint');
-    const translationConfigured = !!String(process.env.ANTHROPIC_API_KEY || '').trim();
+    const translationConfigured = !!String(process.env.OPENAI_API_KEY || '').trim();
 
     await page.click('.sidebar-nav a[data-nav="questions"]');
     await page.waitForSelector('#newQBtn', { timeout: 10000 });
@@ -965,7 +965,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
       await page.keyboard.press('Escape');
       await page.waitForTimeout(400);
-      console.log('\n\x1b[33m  CONFIGURATION BLOCKER\x1b[0m  ANTHROPIC_API_KEY is not set on this server.');
+      console.log('\n\x1b[33m  CONFIGURATION BLOCKER\x1b[0m  OPENAI_API_KEY is not set on this server.');
       console.log('  The automatic-translation flow (generate Lao -> save -> candidate sits in Lao)');
       console.log('  was NOT exercised end to end. Set the key and re-run to prove it.');
     } else {
@@ -1098,6 +1098,213 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         'and the answer is still the canonical value');
       await trCtx.close();
     }
+
+    // ------------------------------------------- IQ test module, end to end
+    head('IQ test module \u2014 admin builds it, a candidate sits it, the server marks it');
+
+    await page.click('.sidebar-nav a[data-nav="iq"]');
+    await page.waitForSelector('#iqBody', { timeout: 15000 });
+    const iqBankText = await page.locator('#iqBody').innerText();
+    check(/Numerical reasoning|Logical reasoning/.test(iqBankText), 'the IQ bank lists seeded questions by category');
+    check(await page.locator('#iqNew').count() > 0, 'and offers a New IQ question control');
+
+    // 1-4. Build a question through the real form: no JSON anywhere.
+    await page.click('#iqNew');
+    await page.waitForSelector('#iqQText', { timeout: 10000 });
+    const iqEnglish = 'Browser IQ question: which number completes the series 7, 14, 28, ?';
+    await page.selectOption('#iqQCat', 'NUMERICAL');
+    await page.selectOption('#iqQDiff', 'MEDIUM');
+    await page.fill('#iqQText', iqEnglish);
+    await page.fill('.iqOptEn[data-value="A"]', '42');
+    await page.fill('.iqOptEn[data-value="B"]', '56');
+    await page.fill('.iqOptEn[data-value="C"]', '35');
+    await page.fill('.iqOptEn[data-value="D"]', '70');
+    await page.check('#iqOpts input[name="iqCorrect"][value="B"]');
+
+    const iqCanon = (await page.locator('#iqOpts td.canon').allInnerTexts()).map((x) => x.trim()).join(',');
+    check(iqCanon === 'A,B,C,D', 'the canonical values are shown read-only', iqCanon);
+    check(await page.locator('#iqOpts td.canon input').count() === 0,
+      'and cannot be edited, because they are what the answer is marked against');
+
+    // 5. Auto-translate, through the REAL endpoint.
+    const iqTranslationConfigured = !!String(process.env.OPENAI_API_KEY || '').trim();
+    const iqLaoStem = '\u0e84\u0eb3\u0e96\u0eb2\u0ea1\u0e97\u0eb5\u0ec8 7, 14, 28, ?';
+    if (iqTranslationConfigured) {
+      await page.click('#iqTrLo');
+      await page.waitForFunction(
+        () => { const el = document.querySelector('#iqQTextLo'); return el && el.value.trim().length > 0; },
+        { timeout: 90000 }
+      );
+      const gen = await page.locator('#iqQTextLo').inputValue();
+      check(/[\u0E80-\u0EFF]/.test(gen), '5. the provider really returned Lao', gen.slice(0, 40));
+      check((await page.locator('#iqOpts td.canon').allInnerTexts()).map((x) => x.trim()).join(',') === 'A,B,C,D',
+        'and the canonical values did not move');
+      check(/7|14|28/.test(gen), 'and the numbers in the question survived', gen);
+      check((await page.locator('#iqQStatus').inputValue()) === 'DRAFT',
+        'machine output is a DRAFT, never auto-approved');
+    } else {
+      check(await page.locator('#iqTrLo').isDisabled(),
+        '5. with no provider configured the Auto-translate button is disabled, not silently broken');
+      const note = await page.locator('#iqTrMsg').innerText();
+      check(/not configured/i.test(note), 'and the admin is told why', JSON.stringify(note));
+      // An admin typing the Lao themselves is a supported path; use it so the
+      // bilingual candidate journey below is still proved.
+      await page.fill('#iqQTextLo', iqLaoStem);
+      // The option labels here are numbers. They are deliberately left blank:
+      // a numeral reads the same in both languages, and a blank Lao label falls
+      // back to the English one, so nothing is invented and nothing is lost.
+    }
+
+    // 6. Review and approve deliberately, then save.
+    await page.selectOption('#iqQStatus', 'APPROVED');
+    await page.click('#iqSave');
+    await page.waitForTimeout(2000);
+
+    const iqQ = db.prepare("SELECT * FROM questions WHERE question_family = 'IQ' AND text LIKE 'Browser IQ question%'").get();
+    check(!!iqQ, '6. the IQ question was created through the UI');
+    check(iqQ && iqQ.iq_category === 'NUMERICAL', 'with its reasoning category', iqQ && iqQ.iq_category);
+    const iqCfg = iqQ ? JSON.parse(iqQ.config_json) : { parts: [] };
+    check(JSON.stringify(iqCfg.parts[0].options) === '["A","B","C","D"]', 'canonical values stored unchanged');
+    check(iqCfg.parts[0].expected === 'B', 'and the correct answer is the VALUE', String(iqCfg.parts[0].expected));
+    check(iqQ && iqQ.translation_status === 'APPROVED', 'approved for Lao by a deliberate admin action');
+
+    // 7-8. Attach it to the IQ test and invite a candidate, in English.
+    const iqCand = await page.evaluate(async (qid) => {
+      const asmts = await api('/assessments');
+      const iqTest = asmts.assessments.find((a) => a.assessmentType === 'IQ_TEST');
+      const full = await api('/assessments/' + iqTest.id);
+      const ids = full.assessment.questions.filter((q) => !q.archived).map((q) => q.id);
+      if (!ids.includes(qid)) ids.push(qid);
+      await api('/assessments/' + iqTest.id, { method: 'PATCH', body: JSON.stringify({ questionIds: ids }) });
+      const c = await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName: 'IQ Browser Candidate', applicationType: 'NORMAL', iq: 118, education: 'Bachelor Degree' }) });
+      const l = await api('/candidates/' + c.id + '/links', { method: 'POST', body: JSON.stringify({ assessmentId: iqTest.id, language: 'en' }) });
+      return { id: c.id, code: c.code, token: l.token, url: l.examUrl, type: l.assessmentType, testId: iqTest.id };
+    }, iqQ.id);
+    check(iqCand.type === 'IQ_TEST', '7. the invitation is an IQ invitation', iqCand.type);
+    check(/\/iq\//.test(iqCand.url), '8. and points at the IQ portal', iqCand.url);
+    check(!iqCand.url.includes(iqCand.code), 'the URL exposes no LALCO ID');
+    check(!iqCand.url.includes(iqCand.id), 'and no database id');
+
+    // 9-12. The candidate sits it.
+    const iqCtx = await browser.newContext();
+    const iqPage = await iqCtx.newPage();
+    const iqErrors = [];
+    iqPage.on('pageerror', (e) => iqErrors.push('pageerror: ' + e.message));
+    iqPage.on('console', (m) => { if (m.type() === 'error') iqErrors.push(m.text()); });
+
+    await iqPage.goto(`${BASE}/iq/${iqCand.token}`, { waitUntil: 'networkidle' });
+    await iqPage.waitForSelector('#startBtn', { timeout: 20000 });
+    const iqIntro = await iqPage.locator('.pbody').innerText();
+    check(/Reasoning Test|Questions/.test(iqIntro), '9. the IQ portal opens with instructions');
+    check(await iqPage.locator('#langSwitch').count() > 0, 'and offers a language choice before starting');
+
+    await iqPage.fill('#vCode', iqCand.code);
+    await iqPage.check('#ack');
+    await iqPage.click('#startBtn');
+    await iqPage.waitForSelector('#nextBtn', { timeout: 20000 });
+    const iqSession = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ?').get(iqCand.id);
+    check(!!iqSession && iqSession.status === 'IN_PROGRESS', '10. the test started');
+    check(iqSession.language === 'en', 'in English, as the invitation said', iqSession.language);
+    check(await iqPage.locator('#timer').count() > 0, 'a timer is shown');
+    check(await iqPage.locator('.progress').count() > 0, 'and a progress indicator');
+
+    // Walk to the question we built and answer it.
+    let iqReached = false;
+    const iqTotal = db.prepare('SELECT COUNT(*) AS n FROM assessment_questions WHERE assessment_id = ?').get(iqCand.testId).n;
+    for (let i = 0; i < iqTotal + 2; i++) {
+      const body = await iqPage.locator('.pbody').innerText();
+      if (body.includes('7, 14, 28')) { iqReached = true; break; }
+      if (!(await iqPage.locator('#nextBtn').count())) break;
+      await iqPage.click('#nextBtn');
+      await iqPage.waitForTimeout(700);
+    }
+    check(iqReached, '11. the candidate reached the question that was just written');
+    await iqPage.check('#opts input[value="B"]');
+    await iqPage.waitForTimeout(1200);
+    const iqStored = db.prepare('SELECT answer_json FROM candidate_answers WHERE session_id = ? AND question_id = ?')
+      .get(iqSession.id, iqQ.id);
+    check(!!iqStored && /"B"/.test(iqStored.answer_json || ''),
+      '12. the answer was stored as the canonical value', iqStored && iqStored.answer_json);
+
+    // 13. Reload: the answer survives.
+    await iqPage.reload({ waitUntil: 'networkidle' });
+    await iqPage.waitForTimeout(1500);
+    const iqAfterReload = db.prepare('SELECT answer_json FROM candidate_answers WHERE session_id = ? AND question_id = ?')
+      .get(iqSession.id, iqQ.id);
+    check(!!iqAfterReload && /"B"/.test(iqAfterReload.answer_json || ''), '13. and it survives a reload');
+    check(one('SELECT status FROM assessment_sessions WHERE id = ?', iqSession.id) === 'IN_PROGRESS',
+      'the test did not restart');
+
+    // 14-16. Switch to Lao: the answer stays, the deadline does not move.
+    const iqDeadline = one('SELECT expires_at FROM assessment_sessions WHERE id = ?', iqSession.id);
+    await iqPage.click('#langSwitch [data-lang="lo"]');
+    await iqPage.waitForTimeout(1500);
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', iqSession.id) === 'lo',
+      '14. switching to Lao is persisted server-side');
+    check(one('SELECT expires_at FROM assessment_sessions WHERE id = ?', iqSession.id) === iqDeadline,
+      '15. and the deadline never moved');
+    const iqStillStored = db.prepare('SELECT answer_json FROM candidate_answers WHERE session_id = ? AND question_id = ?')
+      .get(iqSession.id, iqQ.id);
+    check(!!iqStillStored && /"B"/.test(iqStillStored.answer_json || ''),
+      '16. the answer chosen in English is untouched by the switch');
+    check(one('SELECT COUNT(*) FROM assessment_sessions WHERE candidate_id = ?', iqCand.id) === 1,
+      'and no second attempt was created');
+
+    // The Lao question really renders in Lao.
+    let iqLaoSeen = false;
+    for (let i = 0; i < iqTotal + 2; i++) {
+      const body = await iqPage.locator('.pbody').innerText();
+      if (/[\u0E80-\u0EFF]/.test(body) && body.includes('7, 14, 28') === false && /[\u0E80-\u0EFF]/.test(body)) { iqLaoSeen = true; break; }
+      if (!(await iqPage.locator('#nextBtn').count())) break;
+      await iqPage.click('#nextBtn');
+      await iqPage.waitForTimeout(600);
+    }
+    check(iqLaoSeen, 'the approved Lao question renders in Lao script');
+
+    // 17. Submit and let the server mark it.
+    for (let i = 0; i < iqTotal + 3; i++) {
+      if (await iqPage.locator('#submitBtn').count()) break;
+      if (!(await iqPage.locator('#nextBtn').count())) break;
+      await iqPage.click('#nextBtn');
+      await iqPage.waitForTimeout(500);
+    }
+    check(await iqPage.locator('#submitBtn').count() > 0, 'the review screen is reachable');
+    iqPage.once('dialog', (d) => d.accept());
+    await iqPage.click('#submitBtn');
+    await iqPage.waitForTimeout(2500);
+    check(one('SELECT status FROM assessment_sessions WHERE id = ?', iqSession.id) === 'SUBMITTED',
+      '17. the test submitted');
+
+    const iqResult = db.prepare('SELECT * FROM iq_results WHERE session_id = ?').get(iqSession.id);
+    check(!!iqResult, '18. the server recorded an IQ result');
+    check(iqResult && iqResult.correct_count >= 1, 'with the answered question marked correct', iqResult && String(iqResult.correct_count));
+    check(iqResult && iqResult.total_questions === iqTotal, 'and every question counted', iqResult && String(iqResult.total_questions));
+    check(!!(iqResult && iqResult.category_scores_json && iqResult.category_scores_json.includes('NUMERICAL')),
+      'including a per-category breakdown');
+
+    // The candidate is told nothing about the score.
+    const iqDone = await iqPage.locator('.pbody').innerText();
+    check(!/\b\d+%/.test(iqDone), '19. no score is shown to the candidate', iqDone.slice(0, 80));
+    check(!/correct|incorrect/i.test(iqDone), 'and no right/wrong breakdown');
+    const iqRealErrors = iqErrors.filter((e) => !/favicon|status of 40[019]/i.test(e));
+    check(iqRealErrors.length === 0, 'no console errors during the IQ journey', iqRealErrors.slice(0, 2).join(' | '));
+    await iqCtx.close();
+
+    // 20. The admin reads the result.
+    await page.click('.sidebar-nav a[data-nav="iq"]');
+    await page.waitForSelector('#iqBody', { timeout: 15000 });
+    await page.click('.tabs button[data-iqt="results"]');
+    await page.waitForTimeout(1200);
+    const iqResultsText = await page.locator('#iqBody').innerText();
+    check(iqResultsText.includes('IQ Browser Candidate'), '20. the result appears in the admin results tab');
+    check(/not a clinically validated IQ/i.test(iqResultsText),
+      'with the estimated-score disclaimer shown alongside it');
+    await page.click('[data-iqres]');
+    await page.waitForTimeout(1500);
+    const iqDetail = await page.locator('#content').innerText();
+    check(/Category breakdown/.test(iqDetail), 'the detail view shows the category breakdown');
+    check(/Question by question/.test(iqDetail), 'and a per-question review for the admin');
+    check(/not a clinically validated IQ/i.test(iqDetail), 'and repeats the disclaimer');
 
     // ------------------------ Lao end to end: sit, submit and print in Lao
     // The production smoke test could not prove this: that candidate switched

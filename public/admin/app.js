@@ -96,6 +96,7 @@ const NAV = [
   { key: 'links', label: 'Assessment Links', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'] },
   { key: 'assessments', label: 'Assessments', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER', 'EVALUATOR', 'RECRUITER', 'INTERVIEWER'] },
   { key: 'questions', label: 'Question Bank', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'EVALUATOR', 'MANAGER'] },
+  { key: 'iq', label: 'IQ Test', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'EVALUATOR', 'MANAGER'] },
   { key: 'interviews', label: 'Interviews', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'INTERVIEWER', 'MANAGER'] },
   { key: 'analytics', label: 'Analytics', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
   { key: 'scholarship', label: 'Scholarship Policy', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER'] },
@@ -160,7 +161,7 @@ function renderShell(parts) {
   $$('.sidebar-nav a').forEach((a) => (a.onclick = () => goto(a.dataset.nav)));
   $('#logoutBtn').onclick = logout;
   if (item && !navAllowed(item)) { $('#content').innerHTML = `<div class="empty"><h3>Not authorized</h3><p>Your role does not have access to this section.</p></div>`; return; }
-  const views = { print: viewPrintCandidate, dashboard: viewDashboard, candidates: viewCandidates, live: viewLive, links: viewLinks, assessments: viewAssessments, questions: viewQuestions, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, users: viewUsers, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
+  const views = { print: viewPrintCandidate, dashboard: viewDashboard, candidates: viewCandidates, live: viewLive, links: viewLinks, assessments: viewAssessments, questions: viewQuestions, iq: viewIqTest, interviews: viewInterviews, analytics: viewAnalytics, scholarship: viewScholarship, users: viewUsers, settings: viewSettings, data: viewDataManagement, audit: viewAudit };
   // A view that throws must show a real error with a way out, never a page
   // stuck on "Loading…" (sections 26/29/30).
   Promise.resolve()
@@ -1454,6 +1455,451 @@ function openQuestionModal(question, type, onDone, opts) {
     close();
     onDone && onDone();
   };
+}
+
+
+// ---------------- IQ Test ----------------
+// Three tabs over the same section: the question bank, the tests themselves,
+// and results. The bank is the only place an answer key is visible, and it is
+// role-gated on the server exactly as the recruitment bank is.
+let IQ_META = null;
+let iqTab = 'questions';
+let iqCategoryFilter = '';
+let iqShowArchived = false;
+
+function iqCategoryLabel(key) {
+  const c = (IQ_META && IQ_META.categories) || [];
+  const hit = c.find((x) => x.key === key);
+  return hit ? hit.label : (key || '—');
+}
+
+async function viewIqTest(parts, el) {
+  if (!IQ_META) {
+    IQ_META = await api('/iq/meta');
+    // Whether the server can translate. The IQ section may be opened before the
+    // recruitment bank, which is the other place this flag gets set.
+    try {
+      const lim = await api('/questions/translate/limits');
+      TRANSLATION_CONFIGURED = !!lim.configured;
+    } catch (e) { TRANSLATION_CONFIGURED = false; }
+  }
+  if (parts && parts[0] === 'result' && parts[1]) return viewIqResult(parts[1], el);
+
+  el.innerHTML = `<div class="tabs">
+      <button class="${iqTab === 'questions' ? 'active' : ''}" data-iqt="questions">Question Bank</button>
+      <button class="${iqTab === 'tests' ? 'active' : ''}" data-iqt="tests">IQ Tests</button>
+      <button class="${iqTab === 'results' ? 'active' : ''}" data-iqt="results">Results</button>
+    </div><div id="iqBody">Loading…</div>`;
+  $$('.tabs button', el).forEach((b) => (b.onclick = () => { iqTab = b.dataset.iqt; viewIqTest([], el); }));
+
+  if (iqTab === 'questions') return iqQuestionsTab(el);
+  if (iqTab === 'tests') return iqTestsTab(el);
+  return iqResultsTab(el);
+}
+
+// ------------------------------------------------------------- question bank
+async function iqQuestionsTab(el) {
+  const query = (iqShowArchived ? '?archived=1' : '?archived=0') + (iqCategoryFilter ? '&category=' + encodeURIComponent(iqCategoryFilter) : '');
+  const { questions } = await api('/iq/questions' + query);
+  const cats = (IQ_META.categories || []);
+
+  $('#iqBody').innerHTML = `
+    <div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+      <div class="field" style="margin:0;"><label class="field-label">Category</label>
+        <select id="iqCat"><option value="">All categories</option>
+          ${cats.map((c) => `<option value="${c.key}" ${iqCategoryFilter === c.key ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+        </select></div>
+      <div class="field" style="margin:0;"><label class="field-label">Show</label>
+        <select id="iqArch">
+          <option value="">Active questions</option>
+          <option value="1" ${iqShowArchived ? 'selected' : ''}>Archived</option>
+        </select></div>
+      <span style="flex:1"></span>
+      ${canEditQuestions() ? '<button class="btn btn-primary btn-sm" id="iqNew">+ New IQ question</button>' : ''}
+    </div>
+    <div class="faint" style="margin-bottom:10px;">${questions.length} question${questions.length === 1 ? '' : 's'}${iqCategoryFilter ? ' in ' + esc(iqCategoryLabel(iqCategoryFilter)) : ''}.</div>
+    ${questions.map(iqQuestionCardHTML).join('') || '<div class="empty"><h3>No IQ questions</h3><p>Add one with the button above, or run the seed.</p></div>'}`;
+
+  $('#iqCat').onchange = (e) => { iqCategoryFilter = e.target.value; iqQuestionsTab(el); };
+  $('#iqArch').onchange = (e) => { iqShowArchived = e.target.value === '1'; iqQuestionsTab(el); };
+  if ($('#iqNew')) $('#iqNew').onclick = () => openIqQuestionModal(null, () => iqQuestionsTab(el));
+  wireIqQuestionActions(questions, () => iqQuestionsTab(el));
+}
+
+function iqQuestionCardHTML(q) {
+  return `<div class="card" style="margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span><span class="badge badge-neutral">${esc(iqCategoryLabel(q.category))}</span>
+        <span class="faint">${esc(q.difficulty || '—')} · ${q.marks} mark${q.marks === 1 ? '' : 's'}</span>
+        ${q.archived ? '<span class="badge badge-neutral">ARCHIVED</span>' : ''}
+        ${q.active ? '' : '<span class="badge badge-warning">INACTIVE</span>'}</span>
+      <span>Lao: ${translationBadge(q.translationStatus)} ${sourceBadge(q.translationSource)}</span>
+    </div>
+    <div class="faint" style="font-size:12px;margin:-2px 0 8px;">${
+      q.usedByAssessments && q.usedByAssessments.length
+        ? 'Used by: ' + q.usedByAssessments.map((n) => esc(n)).join(', ')
+        : 'Not used by any test yet — candidates will never see it.'}</div>
+    <div style="white-space:pre-wrap;font-size:13.5px;">${esc(q.text)}</div>
+    ${q.textLo ? `<div style="white-space:pre-wrap;font-size:13.5px;margin-top:6px;padding-top:6px;border-top:1px solid var(--line-soft);"><span class="biltag lo">LO</span> ${esc(q.textLo)}</div>` : ''}
+    <table class="optgrid" style="margin-top:8px;"><thead><tr><th>Value</th><th><span class="biltag en">EN</span> English</th><th><span class="biltag lo">LO</span> Lao</th><th>Correct</th></tr></thead>
+      <tbody>${q.options.map((o) => `<tr>
+        <td class="canon">${esc(o.value)}</td>
+        <td>${esc(o.label)}</td>
+        <td>${o.labelLo ? esc(o.labelLo) : '<span class="faint">—</span>'}</td>
+        <td>${o.value === q.correct ? '<span class="badge badge-success">CORRECT</span>' : ''}</td>
+      </tr>`).join('')}</tbody></table>
+    ${q.explanation ? `<p class="faint" style="margin-top:6px;">Explanation (internal): ${esc(q.explanation)}</p>` : ''}
+    <p class="faint" style="margin-top:6px;">The correct answer and the explanation are shown only here, inside the authenticated admin app — never in the candidate test.</p>
+    ${canEditQuestions() ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+      <button class="btn btn-sm" data-iqact="edit" data-iqid="${q.id}">Edit</button>
+      ${!q.archived && TRANSLATION_CONFIGURED && !String(q.textLo || '').trim()
+        ? `<button class="btn btn-sm" data-iqact="translate" data-iqid="${q.id}">Auto-translate missing Lao</button>` : ''}
+      ${q.archived
+        ? `<button class="btn btn-sm" data-iqact="restore" data-iqid="${q.id}" data-busy="Restoring…">Restore</button>`
+        : `<button class="btn btn-sm" data-iqact="archive" data-iqid="${q.id}" data-busy="Archiving…">Archive</button>`}
+    </div>` : ''}
+  </div>`;
+}
+
+function wireIqQuestionActions(questions, reload) {
+  $$('[data-iqact]').forEach((btn) => {
+    btn.onclick = async () => {
+      const q = questions.find((x) => x.id === btn.dataset.iqid);
+      const act = btn.dataset.iqact;
+      if (act === 'edit') return openIqQuestionModal(q, reload);
+      if (act === 'translate') return openIqQuestionModal(q, reload, { autoTranslateTo: 'lo' });
+      if (act === 'archive') {
+        if (!confirm('Archive this question? It is withdrawn from new tests. Completed tests keep it, and you can restore it at any time.')) return;
+        await api('/iq/questions/' + q.id + '/archive', { method: 'POST' });
+        toast('Question archived.');
+      }
+      if (act === 'restore') {
+        await api('/iq/questions/' + q.id + '/restore', { method: 'POST' });
+        toast('Question restored.');
+      }
+      reload();
+    };
+  });
+}
+
+// The IQ editor is a plain form: no JSON anywhere. The canonical value is shown
+// read-only, because it is what the answer is stored and marked as.
+function openIqQuestionModal(question, onDone, opts) {
+  const editing = !!question;
+  const cats = IQ_META.categories || [];
+  const values = IQ_META.optionValues || ['A', 'B', 'C', 'D'];
+  const current = editing ? question : {
+    category: cats[0] ? cats[0].key : 'NUMERICAL', difficulty: 'MEDIUM', marks: 1,
+    text: '', textLo: '', correct: 'A', explanation: '',
+    options: values.slice(0, 4).map((v) => ({ value: v, label: '', labelLo: '' })),
+    translationStatus: 'MISSING', translationSource: null, active: true,
+  };
+
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(10,18,26,.5);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:4vh 16px;overflow:auto;';
+  bg.innerHTML = `<div class="card" style="max-width:820px;width:100%;">
+    <div class="section-title">${editing ? 'Edit IQ question' : 'New IQ question'}</div>
+
+    <div class="grid grid-3" style="gap:12px;">
+      <div class="field"><label class="field-label">Category *</label>
+        <select id="iqQCat">${cats.map((c) => `<option value="${c.key}" ${current.category === c.key ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}</select></div>
+      <div class="field"><label class="field-label">Difficulty</label>
+        <select id="iqQDiff">${(IQ_META.difficulties || []).map((d) => `<option value="${d}" ${current.difficulty === d ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+      <div class="field"><label class="field-label">Marks</label>
+        <input id="iqQMarks" type="number" min="1" value="${current.marks || 1}"></div>
+    </div>
+
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label"><span class="biltag en">EN</span> Question *</label>
+        <textarea id="iqQText" style="min-height:110px;">${esc(current.text || '')}</textarea></div>
+      <div class="field"><label class="field-label"><span class="biltag lo">LO</span> Question (Lao)</label>
+        <textarea id="iqQTextLo" style="min-height:110px;" placeholder="Leave blank until a translation exists">${esc(current.textLo || '')}</textarea></div>
+    </div>
+
+    <div class="field" id="iqTranslateRow">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button type="button" class="btn btn-sm" id="iqTrLo">Auto-translate to Lao</button>
+        <button type="button" class="btn btn-sm" id="iqTrEn">Auto-translate to English</button>
+        <span class="faint" id="iqTrMsg"></span>
+      </div>
+      <span class="faint">Machine translation fills the other side so you can read and correct it. Nothing is saved until you press Save, and a machine translation is never shown to a candidate until the status is APPROVED.</span>
+    </div>
+
+    <div class="field"><label class="field-label">Options — the canonical value is what the answer is marked against</label>
+      <table class="optgrid"><thead><tr><th>Value</th><th><span class="biltag en">EN</span> English *</th><th><span class="biltag lo">LO</span> Lao</th><th>Correct</th></tr></thead>
+        <tbody id="iqOpts">${current.options.map((o) => `<tr data-optrow="${esc(o.value)}">
+          <td class="canon">${esc(o.value)}</td>
+          <td><input class="iqOptEn" data-value="${esc(o.value)}" value="${esc(o.label || '')}"></td>
+          <td><input class="iqOptLo" data-value="${esc(o.value)}" value="${esc(o.labelLo || '')}" placeholder="Leave blank to show the English"></td>
+          <td style="text-align:center;"><input type="radio" name="iqCorrect" value="${esc(o.value)}" ${current.correct === o.value ? 'checked' : ''}></td>
+        </tr>`).join('')}</tbody></table>
+      <span class="faint">Renaming an option in either language never changes which answer is correct.</span></div>
+
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Translation status</label>
+        <select id="iqQStatus">${['MISSING', 'DRAFT', 'APPROVED'].map((st) => `<option value="${st}" ${current.translationStatus === st ? 'selected' : ''}>${st}</option>`).join('')}</select>
+        <span class="faint">Only APPROVED Lao is shown to a candidate.</span></div>
+      <div class="field"><label class="field-label">Active</label>
+        <select id="iqQActive">
+          <option value="1" ${current.active !== false ? 'selected' : ''}>Active</option>
+          <option value="0" ${current.active === false ? 'selected' : ''}>Inactive</option>
+        </select></div>
+    </div>
+
+    <div class="field"><label class="field-label">Explanation (internal — never shown to candidates)</label>
+      <textarea id="iqQExpl" style="min-height:60px;">${esc(current.explanation || '')}</textarea></div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" id="iqCancel">Cancel</button>
+      <button class="btn btn-primary" id="iqSave" data-busy="Saving…">${editing ? 'Save changes' : 'Create question'}</button>
+    </div>
+  </div>`;
+
+  document.body.appendChild(bg);
+  const close = makeDismissable(bg);
+  $('#iqCancel', bg).onclick = close;
+  $('#iqQText', bg).focus();
+
+  // Provenance, exactly as the recruitment editor tracks it: machine output
+  // stays labelled MACHINE only until a person edits it.
+  let translationSource = (editing && question.translationSource) || null;
+  let translating = false;
+  function markHumanEdit() { if (translationSource === 'MACHINE') translationSource = 'HUMAN'; }
+  ['#iqQText', '#iqQTextLo'].forEach((sel) => { const n = $(sel, bg); if (n) n.addEventListener('input', markHumanEdit); });
+  $('#iqOpts', bg).addEventListener('input', markHumanEdit);
+
+  function readOptions() {
+    return $$('#iqOpts tr[data-optrow]', bg).map((tr) => ({
+      value: tr.dataset.optrow,
+      label: $('.iqOptEn', tr).value.trim(),
+      labelLo: $('.iqOptLo', tr).value.trim(),
+    }));
+  }
+  function selectedCorrect() {
+    const r = $('#iqOpts input[name="iqCorrect"]:checked', bg);
+    return r ? r.value : null;
+  }
+
+  function refreshTranslate() {
+    const lo = $('#iqTrLo', bg), en = $('#iqTrEn', bg);
+    const hasEn = !!$('#iqQText', bg).value.trim();
+    const hasLo = !!$('#iqQTextLo', bg).value.trim();
+    lo.textContent = translating ? 'Translating…' : (hasLo ? 'Regenerate Lao' : 'Auto-translate to Lao');
+    en.textContent = translating ? 'Translating…' : (hasEn ? 'Regenerate English' : 'Auto-translate to English');
+    lo.disabled = translating || !TRANSLATION_CONFIGURED || !hasEn;
+    en.disabled = translating || !TRANSLATION_CONFIGURED || !hasLo;
+    const msg = $('#iqTrMsg', bg);
+    if (msg && !translating) msg.textContent = TRANSLATION_CONFIGURED ? '' : 'Automatic translation is not configured on this server.';
+  }
+
+  async function runTranslation(target) {
+    if (translating) return;
+    const from = target === 'lo' ? 'en' : 'lo';
+    const sourceText = (from === 'en' ? $('#iqQText', bg) : $('#iqQTextLo', bg)).value.trim();
+    if (!sourceText) return toast('There is no ' + (from === 'en' ? 'English' : 'Lao') + ' text to translate.', true);
+    const targetText = (target === 'lo' ? $('#iqQTextLo', bg) : $('#iqQText', bg)).value.trim();
+    if (targetText && !confirm('Replace the existing ' + (target === 'lo' ? 'Lao' : 'English') + ' wording with a new machine translation?')) return;
+
+    const opts = readOptions().map((o) => ({ value: o.value, label: (from === 'en' ? o.label : o.labelLo) || o.value }));
+    translating = true; refreshTranslate();
+    const msg = $('#iqTrMsg', bg);
+    if (msg) msg.textContent = 'Translating…';
+    try {
+      const r = await api('/questions/translate', {
+        method: 'POST',
+        body: JSON.stringify({
+          questionId: editing ? question.id : null,
+          sourceLanguage: from, targetLanguage: target,
+          question: sourceText, options: opts,
+        }),
+      });
+      (target === 'lo' ? $('#iqQTextLo', bg) : $('#iqQText', bg)).value = r.question;
+      const byValue = {};
+      (r.options || []).forEach((o) => { byValue[o.value] = o.label; });
+      $$('#iqOpts tr[data-optrow]', bg).forEach((tr) => {
+        const label = byValue[tr.dataset.optrow];
+        if (label === undefined) return;
+        $(target === 'lo' ? '.iqOptLo' : '.iqOptEn', tr).value = label;
+      });
+      translationSource = 'MACHINE';
+      const st = $('#iqQStatus', bg);
+      if (st && st.value === 'MISSING') st.value = 'DRAFT';
+      if (msg) msg.textContent = 'Machine translation inserted — review it before saving.';
+      toast('Translated. Review the wording, then Save.');
+    } catch (e) {
+      if (msg) msg.textContent = '';
+      toast((e.data && e.data.error) || 'Translation failed. Please try again.', true);
+    } finally {
+      translating = false; refreshTranslate();
+    }
+  }
+
+  $('#iqTrLo', bg).onclick = () => runTranslation('lo');
+  $('#iqTrEn', bg).onclick = () => runTranslation('en');
+  ['#iqQText', '#iqQTextLo'].forEach((sel) => { const n = $(sel, bg); if (n) n.addEventListener('input', refreshTranslate); });
+  refreshTranslate();
+  if (opts && opts.autoTranslateTo) runTranslation(opts.autoTranslateTo);
+
+  $('#iqSave', bg).onclick = async () => {
+    const payload = {
+      category: $('#iqQCat', bg).value,
+      difficulty: $('#iqQDiff', bg).value,
+      marks: Number($('#iqQMarks', bg).value) || 1,
+      text: $('#iqQText', bg).value.trim(),
+      textLo: $('#iqQTextLo', bg).value.trim() || null,
+      options: readOptions(),
+      correct: selectedCorrect(),
+      explanation: $('#iqQExpl', bg).value.trim() || null,
+      translationStatus: $('#iqQStatus', bg).value,
+      translationSource,
+      active: $('#iqQActive', bg).value === '1',
+    };
+    // The server validates all of this again and is the authority.
+    if (!payload.text) return toast('The English question text is required.', true);
+    if (!payload.correct) return toast('Choose which option is correct.', true);
+    const r = editing
+      ? await api('/iq/questions/' + question.id, { method: 'PATCH', body: JSON.stringify(payload) })
+      : await api('/iq/questions', { method: 'POST', body: JSON.stringify(payload) });
+    toast(`IQ question ${editing ? 'updated' : 'created'} · Lao ${r.translationStatus}.`);
+    close();
+    onDone && onDone();
+  };
+}
+
+// -------------------------------------------------------------------- tests
+async function iqTestsTab(el) {
+  const { assessments } = await api('/assessments');
+  const tests = assessments.filter((a) => a.assessmentType === 'IQ_TEST');
+  $('#iqBody').innerHTML = `
+    <div class="card" style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <span class="faint">An IQ test is an assessment of type IQ_TEST. It has its own duration, its own question set and its own scoring model.</span>
+      <span style="flex:1"></span>
+      ${canEditQuestions() ? '<button class="btn btn-primary btn-sm" id="iqNewTest">+ New IQ test</button>' : ''}
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Questions</th><th>Duration</th><th>Pass</th><th>Estimated score</th><th>Status</th><th></th></tr></thead>
+      <tbody>${tests.map((a) => `<tr>
+        <td>${esc(a.name)}</td>
+        <td class="mono">${a.questionCount}</td>
+        <td class="mono">${a.duration_minutes} min</td>
+        <td class="mono">${a.iqScoring ? a.iqScoring.passThreshold + '%' : '—'}</td>
+        <td>${a.iqScoring && a.iqScoring.estimatedIqEnabled ? '<span class="badge badge-neutral">ON</span>' : '<span class="faint">off</span>'}</td>
+        <td>${a.archived ? '<span class="badge badge-neutral">ARCHIVED</span>' : a.active ? '<span class="badge badge-success">ACTIVE</span>' : '<span class="badge badge-warning">INACTIVE</span>'}</td>
+        <td><button class="btn btn-sm" data-iqtest="${a.id}">Open in Assessments →</button></td>
+      </tr>`).join('') || '<tr><td colspan="7" class="faint">No IQ tests yet.</td></tr>'}</tbody></table></div>
+    <p class="faint" style="margin-top:10px;">Any estimated figure is derived from this test alone. It is <b>not</b> a clinically validated IQ and must not be presented as one.</p>`;
+
+  $$('[data-iqtest]').forEach((b) => (b.onclick = () => goto('assessments/' + b.dataset.iqtest)));
+  if ($('#iqNewTest')) $('#iqNewTest').onclick = () => openIqTestModal(() => iqTestsTab(el));
+}
+
+function openIqTestModal(onDone) {
+  const d = IQ_META.defaultScoring || {};
+  const bg = document.createElement('div');
+  bg.style.cssText = 'position:fixed;inset:0;background:rgba(10,18,26,.5);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px;overflow:auto;';
+  bg.innerHTML = `<div class="card" style="max-width:620px;width:100%;">
+    <div class="section-title">New IQ test</div>
+    <div class="field"><label class="field-label">Name *</label><input id="itName" placeholder="LALCO Reasoning (IQ) Test 2026"></div>
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Duration (minutes)</label><input id="itDur" type="number" min="1" value="30"></div>
+      <div class="field"><label class="field-label">Invitation expiry (minutes)</label><input id="itExp" type="number" min="1" value="10"></div>
+    </div>
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Pass threshold (% correct)</label><input id="itPass" type="number" min="0" max="100" value="${d.passThreshold != null ? d.passThreshold : 50}"></div>
+      <div class="field"><label class="field-label">Estimated score</label>
+        <select id="itEst"><option value="1">Publish an estimated figure</option><option value="0">Raw score and percentage only</option></select>
+        <span class="faint">An estimate from this test only — never a clinical IQ.</span></div>
+    </div>
+    <p class="faint">Questions are attached afterwards in Assessments, from the IQ bank.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" id="itCancel">Cancel</button>
+      <button class="btn btn-primary" id="itSave" data-busy="Creating…">Create IQ test</button>
+    </div>
+  </div>`;
+  document.body.appendChild(bg);
+  const close = makeDismissable(bg);
+  $('#itCancel', bg).onclick = close;
+  $('#itName', bg).focus();
+  $('#itSave', bg).onclick = async () => {
+    const name = $('#itName', bg).value.trim();
+    if (!name) return toast('A name is required.', true);
+    const r = await api('/assessments', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        assessmentType: 'IQ_TEST',
+        duration_minutes: Number($('#itDur', bg).value) || 30,
+        link_expiry_minutes: Number($('#itExp', bg).value) || 10,
+        iqScoring: { ...d, passThreshold: Number($('#itPass', bg).value), estimatedIqEnabled: $('#itEst', bg).value === '1' },
+      }),
+    });
+    toast('IQ test created. Attach questions in Assessments.');
+    close();
+    onDone && onDone();
+  };
+}
+
+// ------------------------------------------------------------------ results
+async function iqResultsTab(el) {
+  const { results, estimatedIqDisclaimer } = await api('/iq/results');
+  $('#iqBody').innerHTML = `
+    <div class="table-wrap"><table><thead><tr><th>Candidate</th><th>LALCO ID</th><th>Test</th><th>Language</th><th>Correct</th><th>Score</th><th>Estimated</th><th>Duration</th><th></th></tr></thead>
+      <tbody>${results.map((r) => `<tr>
+        <td>${esc(r.candidateName)}</td>
+        <td class="mono faint">${esc(r.candidateCode)}</td>
+        <td>${esc(r.assessmentName || '—')}</td>
+        <td>${r.language === 'lo' ? 'ລາວ (Lao)' : 'English'}</td>
+        <td class="mono">${r.correct}/${r.totalQuestions}</td>
+        <td class="mono">${r.rawScore}/${r.rawMax} · ${r.percentage}%</td>
+        <td class="mono">${r.estimatedIq != null ? r.estimatedIq : '—'}</td>
+        <td class="mono">${r.durationSeconds != null ? Math.floor(r.durationSeconds / 60) + 'm ' + (r.durationSeconds % 60) + 's' : '—'}</td>
+        <td><button class="btn btn-sm" data-iqres="${r.sessionId}">View →</button></td>
+      </tr>`).join('') || '<tr><td colspan="9" class="faint">No IQ results yet.</td></tr>'}</tbody></table></div>
+    <p class="faint" style="margin-top:10px;">${esc(estimatedIqDisclaimer)}</p>`;
+  $$('[data-iqres]').forEach((b) => (b.onclick = () => goto('iq/result/' + b.dataset.iqres)));
+}
+
+async function viewIqResult(sessionId, el) {
+  const { result, estimatedIqDisclaimer } = await api('/iq/results/' + encodeURIComponent(sessionId));
+  const cats = Object.keys(result.categoryScores || {});
+  el.innerHTML = `
+    <button class="btn btn-sm" id="iqBack" style="margin-bottom:12px;">← Back to results</button>
+    <div class="card">
+      <div class="section-title">${esc(result.candidate ? result.candidate.name : '')} <span class="faint">${esc(result.candidate ? result.candidate.code : '')}</span></div>
+      <div class="grid grid-4">
+        <div class="kpi"><div class="num">${result.correct}/${result.totalQuestions}</div><div class="lbl">Correct</div></div>
+        <div class="kpi"><div class="num">${result.percentage}%</div><div class="lbl">Percentage</div></div>
+        <div class="kpi"><div class="num">${result.rawScore}/${result.rawMax}</div><div class="lbl">Raw score</div></div>
+        <div class="kpi"><div class="num">${result.estimatedIq != null ? result.estimatedIq : '—'}</div><div class="lbl">Estimated score</div></div>
+      </div>
+      <div class="grid grid-4" style="margin-top:10px;">
+        ${kv('Test', result.assessment ? result.assessment.name : '—')}
+        ${kv('Language sat in', result.language === 'lo' ? 'ລາວ (Lao)' : 'English')}
+        ${kv('Duration', result.durationSeconds != null ? Math.floor(result.durationSeconds / 60) + 'm ' + (result.durationSeconds % 60) + 's' : '—')}
+        ${kv('Submitted', fmtDT(result.submittedAt))}
+      </div>
+      <p class="faint" style="margin-top:8px;"><b>${esc(estimatedIqDisclaimer)}</b></p>
+    </div>
+
+    <div class="card" style="margin-top:14px;"><div class="section-title">Category breakdown</div>
+      <div class="table-wrap"><table><thead><tr><th>Category</th><th>Correct</th><th>Incorrect</th><th>Unanswered</th><th>Score</th></tr></thead>
+        <tbody>${cats.map((k) => {
+          const c = result.categoryScores[k];
+          return `<tr><td>${esc(iqCategoryLabel(k))}</td><td class="mono">${c.correct}/${c.total}</td>
+            <td class="mono">${c.incorrect}</td><td class="mono">${c.unanswered}</td>
+            <td class="mono">${c.marks}/${c.max} · ${c.percentage}%</td></tr>`;
+        }).join('')}</tbody></table></div></div>
+
+    <div class="card" style="margin-top:14px;"><div class="section-title">Question by question</div>
+      <div class="table-wrap"><table><thead><tr><th>#</th><th>Category</th><th>Question</th><th>Answer given</th><th>Correct answer</th><th>Marks</th></tr></thead>
+        <tbody>${(result.review || []).map((r, i) => `<tr>
+          <td>${i + 1}</td><td class="faint">${esc(iqCategoryLabel(r.category))}</td>
+          <td style="max-width:320px;">${esc((r.text || '').slice(0, 140))}${(r.text || '').length > 140 ? '…' : ''}</td>
+          <td class="mono">${r.submitted == null ? '<span class="faint">—</span>' : esc(r.submitted)}</td>
+          <td class="mono">${esc(r.expected)}</td>
+          <td>${r.correct ? '<span class="badge badge-success">' + r.marks + '/' + r.max + '</span>' : '<span class="badge badge-danger">0/' + r.max + '</span>'}</td>
+        </tr>`).join('')}</tbody></table></div>
+      <p class="faint" style="margin-top:6px;">Correct answers are shown only on this authenticated admin page.</p></div>`;
+  $('#iqBack').onclick = () => { iqTab = 'results'; goto('iq'); };
 }
 
 // ---------------- Interviews queue ----------------

@@ -63,11 +63,21 @@ http_body() { # http_body <method> <url> [auth-token] [json-body]
 }
 
 jsonval() { # jsonval <json> <js expression using `d`>
-  "$NODE" -e "
-    let d; try { d = JSON.parse(process.argv[1]); } catch (e) { console.log(''); process.exit(0); }
-    const v = (() => { try { return ($2); } catch (e) { return ''; } })();
-    console.log(v === undefined || v === null ? '' : v);
-  " "$1"
+  # The document arrives on STDIN rather than as an argument. A question-bank
+  # response is tens of kilobytes and Windows caps a command line at about 32k,
+  # so passing it in argv failed with "Argument list too long" — and because the
+  # helper then printed nothing, every assertion using it reported an empty
+  # value as a genuine product failure instead of a broken harness.
+  printf '%s' "$1" | "$NODE" -e "
+    let raw = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { raw += chunk; });
+    process.stdin.on('end', () => {
+      let d; try { d = JSON.parse(raw); } catch (e) { console.log(''); return; }
+      const v = (() => { try { return ($2); } catch (e) { return ''; } })();
+      console.log(v === undefined || v === null ? '' : v);
+    });
+  "
 }
 
 login() { # login <email> <password>

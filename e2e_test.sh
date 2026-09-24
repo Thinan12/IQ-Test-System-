@@ -69,7 +69,7 @@ CAND_CODE=$("$NODE" -e "
 const http=require('http');
 " )
 CAND_DETAIL=$(curl -s $BASE/api/admin/candidates/$CAND_ID -H "Authorization: Bearer $TOKEN")
-REAL_CODE=$("$NODE" -e "console.log(JSON.parse(process.argv[1]).candidate.code)" "$CAND_DETAIL")
+REAL_CODE=$(printf '%s' "$CAND_DETAIL" | "$NODE" -e "console.log(JSON.parse(require('fs').readFileSync(0, 'utf8')).candidate.code)")
 START2=$(curl -s -X POST $BASE/api/exam/$EXAM_TOKEN/start -H 'Content-Type: application/json' -d "{\"candidateCode\":\"$REAL_CODE\"}")
 echo "$START2" | grep -q "expiresAt" || fail "correct verification should have started the session: $START2"
 echo "OK - assessment started with correct verification: $START2"
@@ -82,10 +82,10 @@ echo "OK - no answer-key fields present in candidate question payload"
 echo "  sample: $(echo "$QLIST" | head -c 300)"
 
 echo "== 7. Candidate answers all 6 calc questions correctly + essay =="
-QIDS=$("$NODE" -e "
-const data = JSON.parse(process.argv[1]);
+QIDS=$(printf '%s' "$QLIST" | "$NODE" -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(data.questions.filter(q=>q.type==='CALC').map(q=>q.id).join(','));
-" "$QLIST")
+")
 IFS=',' read -ra QARR <<< "$QIDS"
 ANSWERS=('{"monthlyInterest":3000,"totalInterest":18000}' '{"monthlyPrincipal":2000,"outstandingPrincipal":14000}' '{"ltv":250,"decision":"Reject"}' '{"monthlyPrincipal":138.89,"month1Interest":125,"month1Total":263.89}' '{"monthlyInterest":210,"month6Total":7210}' '{"monthlyInterest":250,"totalInterest":9000,"brokerFee":315}')
 for i in "${!QARR[@]}"; do
@@ -96,10 +96,10 @@ for i in "${!QARR[@]}"; do
 done
 echo "OK - all 6 calculation answers saved"
 
-ESSAY_QID=$("$NODE" -e "
-const data = JSON.parse(process.argv[1]);
+ESSAY_QID=$(printf '%s' "$QLIST" | "$NODE" -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log(data.questions.find(q=>q.type==='ESSAY').id);
-" "$QLIST")
+")
 curl -s -X POST $BASE/api/exam/$EXAM_TOKEN/answer -H 'Content-Type: application/json' \
   -d "{\"questionId\":\"$ESSAY_QID\",\"answer\":{\"text\":\"I want to join LALCO for the salary and clear career path.\"},\"timeSpentDeltaSeconds\":300}" | grep -q '"ok":true' || fail "essay save failed"
 echo "OK - essay answer saved"
@@ -148,14 +148,14 @@ echo "OK - old link correctly REVOKED in history, never deleted"
 
 echo "== 10. HR opens candidate profile and sees full results =="
 DETAIL=$(curl -s $BASE/api/admin/candidates/$CAND_ID -H "Authorization: Bearer $TOKEN")
-"$NODE" -e "
-const d = JSON.parse(process.argv[1]);
+printf '%s' "$DETAIL" | "$NODE" -e "
+const d = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log('Eligibility:', d.eligibility.status);
 console.log('Calc score:', d.scores.calc_marks, '/', d.scores.calc_max, '(expect 30/30 for all-correct answers)');
 console.log('Answers recorded:', d.answers.filter(a=>a.answer).length, '/', d.answers.length);
 console.log('Breakdown for Q1:', JSON.stringify(d.answers[0].breakdown));
 if (d.scores.calc_marks !== 30) { console.log('FAIL: expected full marks 30/30'); process.exit(1); }
-" "$DETAIL"
+"
 echo "OK - HR sees full candidate results with real per-question breakdown"
 
 echo "== 11. Essay + interview marking by HR, final score + pass/fail =="
@@ -164,20 +164,20 @@ curl -s -X POST $BASE/api/admin/candidates/$CAND_ID/essay-score -H "Authorizatio
 curl -s -X POST $BASE/api/admin/candidates/$CAND_ID/interview-score -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"scores":{"communication":9,"responsiveness":9,"professionalism":9,"jobUnderstanding":9},"comments":"Confident, clear."}' | grep -q '"ok":true' || fail "interview scoring failed"
 FINAL=$(curl -s $BASE/api/admin/candidates/$CAND_ID -H "Authorization: Bearer $TOKEN")
-"$NODE" -e "
-const d = JSON.parse(process.argv[1]);
+printf '%s' "$FINAL" | "$NODE" -e "
+const d = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log('FINAL SCORE:', d.scores.final_marks, '/100  PASS:', !!d.scores.pass, '  STATUS:', d.candidate.status);
 if (d.scores.final_marks !== 91) { console.log('FAIL: expected final 91 (30+25+36)'); process.exit(1); }
 if (!d.scores.pass) { console.log('FAIL: expected pass'); process.exit(1); }
-" "$FINAL"
+"
 echo "OK - final rollup correct"
 
 echo "== 12. Integrity indicators visible to HR =="
-"$NODE" -e "
-const d = JSON.parse(process.argv[1]);
+printf '%s' "$FINAL" | "$NODE" -e "
+const d = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log('Integrity risk:', d.integrity.risk_level, JSON.parse(d.integrity.evidence_json));
 if (d.integrity.risk_level === 'Low') { console.log('FAIL: expected Medium/High risk given the simulated paste+focus events'); process.exit(1); }
-" "$FINAL"
+"
 echo "OK - integrity risk correctly elevated with evidence"
 
 echo "== 13. Failure analysis endpoint =="
@@ -193,12 +193,12 @@ head -3 "$TEST_DIR/report.csv"
 
 echo "== 15. Audit log has entries =="
 AUDIT=$(curl -s $BASE/api/admin/audit -H "Authorization: Bearer $TOKEN")
-"$NODE" -e "
-const d = JSON.parse(process.argv[1]);
+printf '%s' "$AUDIT" | "$NODE" -e "
+const d = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 console.log('Audit log entries:', d.logs.length);
 console.log(d.logs.slice(0,5).map(l=>l.action));
 if (d.logs.length < 5) { console.log('FAIL: expected several audit entries'); process.exit(1); }
-" "$AUDIT"
+"
 
 echo "== 16. Analytics endpoint =="
 curl -s $BASE/api/admin/analytics -H "Authorization: Bearer $TOKEN" | "$NODE" -e "

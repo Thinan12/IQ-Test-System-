@@ -114,7 +114,9 @@ function seedUsers(password) {
 }
 
 function seedQuestions() {
-  const existing = db.prepare(`SELECT COUNT(*) AS n FROM questions`).get().n;
+  const existing = db.prepare(
+    `SELECT COUNT(*) AS n FROM questions WHERE question_family = 'GENERAL'`
+  ).get().n;
   if (existing > 0) { console.log('Questions already seeded, skipping.'); return; }
   const calc = [
     { order: 1, category: 'Interest Calculation', difficulty: 'Basic',
@@ -195,6 +197,186 @@ function seedQuestions() {
 // Attach them here, once the bank exists. Only an assessment that still has no
 // questions and has never been edited is touched, so an assessment someone
 // deliberately emptied is left alone.
+
+// ---------------------------------------------------------------------------
+// IQ reasoning bank.
+//
+// Original questions written for this project, six categories, English only.
+// No Lao is invented here: translation_status stays MISSING and an admin
+// supplies or auto-translates Lao and approves it before any candidate sees it.
+//
+// Each question is a single-choice question with canonical values A-D. The
+// VALUE is what is stored and marked; the visible text lives in optionLabels,
+// so translating the text can never change the answer.
+const IQ_BANK = [
+  // ---------------------------------------------------------- NUMERICAL
+  { category: 'NUMERICAL', difficulty: 'EASY',
+    text: 'What number comes next in this series?\n\n2, 4, 8, 16, ?',
+    options: { A: '24', B: '32', C: '36', D: '40' }, correct: 'B',
+    explanation: 'Each term is double the one before it, so the next term is 16 x 2 = 32.' },
+  { category: 'NUMERICAL', difficulty: 'MEDIUM',
+    text: 'A machine produces 240 items in 8 hours, working at a constant rate. How many items does it produce in 5 hours?',
+    options: { A: '120', B: '140', C: '150', D: '160' }, correct: 'C',
+    explanation: '240 / 8 = 30 items per hour. 30 x 5 = 150.' },
+  { category: 'NUMERICAL', difficulty: 'HARD',
+    text: 'The average of five numbers is 18. When one number is removed the average of the remaining four is 20. What number was removed?',
+    options: { A: '8', B: '10', C: '12', D: '14' }, correct: 'B',
+    explanation: 'Total before = 5 x 18 = 90. Total after = 4 x 20 = 80. The removed number is 90 - 80 = 10.' },
+
+  // ------------------------------------------------------------ LOGICAL
+  { category: 'LOGICAL', difficulty: 'EASY',
+    text: 'All engineers in a company attended the safety briefing.\nSome people who attended the safety briefing are contractors.\n\nWhich statement must be true?',
+    options: {
+      A: 'All contractors are engineers.',
+      B: 'Some contractors attended the safety briefing.',
+      C: 'No engineer is a contractor.',
+      D: 'Every attendee is an engineer.',
+    }, correct: 'B',
+    explanation: 'The second premise states directly that some attendees are contractors. The other options claim more than the premises support.' },
+  { category: 'LOGICAL', difficulty: 'MEDIUM',
+    text: 'If the report is late, the review is postponed.\nThe review was not postponed.\n\nWhat follows?',
+    options: {
+      A: 'The report was late.',
+      B: 'The report was not late.',
+      C: 'The review was cancelled.',
+      D: 'Nothing can be concluded.',
+    }, correct: 'B',
+    explanation: 'Denying the consequent denies the antecedent: if lateness would have forced a postponement and none happened, the report was not late.' },
+  { category: 'LOGICAL', difficulty: 'HARD',
+    text: 'Four colleagues sit in a row. Mai is not at either end. Som sits immediately to the right of Mai. Noy sits at the far left.\n\nWho sits at the far right?',
+    options: { A: 'Mai', B: 'Som', C: 'Noy', D: 'The fourth colleague' }, correct: 'B',
+    explanation: 'Noy is position 1. Mai cannot be position 1 or 4, and Som is immediately right of Mai, so Mai is 3 and Som is 4.' },
+
+  // ------------------------------------------------------------ PATTERN
+  { category: 'PATTERN', difficulty: 'EASY',
+    text: 'Which letter continues the pattern?\n\nA, C, E, G, ?',
+    options: { A: 'H', B: 'I', C: 'J', D: 'K' }, correct: 'B',
+    explanation: 'The letters advance by two positions each time, so G is followed by I.' },
+  { category: 'PATTERN', difficulty: 'MEDIUM',
+    text: 'A pattern repeats every four steps:\n\ncircle, square, triangle, circle, circle, square, triangle, circle, ...\n\nWhat is the 15th shape?',
+    options: { A: 'circle', B: 'square', C: 'triangle', D: 'cannot be determined' }, correct: 'C',
+    explanation: '15 divided by 4 leaves a remainder of 3, so the 15th shape is the third in the block: triangle.' },
+  { category: 'PATTERN', difficulty: 'HARD',
+    text: 'Study the pairs:\n\n2 -> 5\n3 -> 10\n4 -> 17\n5 -> 26\n\nWhat does 6 map to?',
+    options: { A: '35', B: '36', C: '37', D: '38' }, correct: 'C',
+    explanation: 'Each output is the input squared plus one: 6 x 6 + 1 = 37.' },
+
+  // ------------------------------------------------------------- VERBAL
+  { category: 'VERBAL', difficulty: 'EASY',
+    text: 'Book is to Library as Painting is to ?',
+    options: { A: 'Artist', B: 'Gallery', C: 'Canvas', D: 'Frame' }, correct: 'B',
+    explanation: 'A library is where books are kept and shown; a gallery is where paintings are kept and shown.' },
+  { category: 'VERBAL', difficulty: 'MEDIUM',
+    text: 'Which word does NOT belong with the others?',
+    options: { A: 'Constant', B: 'Steady', C: 'Fluctuating', D: 'Stable' }, correct: 'C',
+    explanation: 'Constant, steady and stable all describe something unchanging. Fluctuating is the opposite.' },
+  { category: 'VERBAL', difficulty: 'HARD',
+    text: 'Choose the pair whose relationship most closely matches:\n\nDrought is to Rainfall',
+    options: {
+      A: 'Famine is to Food',
+      B: 'Storm is to Wind',
+      C: 'Harvest is to Season',
+      D: 'River is to Bank',
+    }, correct: 'A',
+    explanation: 'A drought is a severe shortage of rainfall; a famine is a severe shortage of food. The other pairs are not shortages.' },
+
+  // ------------------------------------------------------------ SPATIAL
+  { category: 'SPATIAL', difficulty: 'EASY',
+    text: 'A square piece of paper is rotated 90 degrees clockwise, then 90 degrees clockwise again.\n\nHow does its final position compare with the start?',
+    options: {
+      A: 'Unchanged',
+      B: 'Rotated 90 degrees clockwise',
+      C: 'Rotated 180 degrees',
+      D: 'Mirrored left to right',
+    }, correct: 'C',
+    explanation: 'Two quarter turns in the same direction make a half turn, which is 180 degrees.' },
+  { category: 'SPATIAL', difficulty: 'MEDIUM',
+    text: 'A cube is painted on all six faces and then cut into 27 identical smaller cubes.\n\nHow many of the small cubes have paint on exactly three faces?',
+    options: { A: '4', B: '6', C: '8', D: '12' }, correct: 'C',
+    explanation: 'Only the corner cubes show three painted faces, and a cube has 8 corners.' },
+  { category: 'SPATIAL', difficulty: 'HARD',
+    text: 'You face north, turn 90 degrees right, then 180 degrees, then 90 degrees left.\n\nWhich direction do you now face?',
+    options: { A: 'North', B: 'East', C: 'South', D: 'West' }, correct: 'C',
+    explanation: 'Facing north, a 90 degree right turn faces east. A 180 degree turn from east faces west. A 90 degree left turn from west faces south.' },
+
+  // ----------------------------------------------------------- SEQUENCE
+  { category: 'SEQUENCE', difficulty: 'EASY',
+    text: 'Complete the sequence:\n\n5, 10, 15, 20, ?',
+    options: { A: '22', B: '24', C: '25', D: '30' }, correct: 'C',
+    explanation: 'The sequence increases by 5 each time, so the next term is 25.' },
+  { category: 'SEQUENCE', difficulty: 'MEDIUM',
+    text: 'Complete the sequence:\n\n1, 1, 2, 3, 5, 8, ?',
+    options: { A: '11', B: '12', C: '13', D: '15' }, correct: 'C',
+    explanation: 'Each term is the sum of the two before it: 5 + 8 = 13.' },
+  { category: 'SEQUENCE', difficulty: 'HARD',
+    text: 'Complete the sequence:\n\n3, 7, 16, 35, ?',
+    options: { A: '70', B: '74', C: '78', D: '82' }, correct: 'B',
+    explanation: 'Each term is double the previous term plus an increasing odd number: 3x2+1=7, 7x2+2=16, 16x2+3=35, 35x2+4=74.' },
+];
+
+const IQ_ASSESSMENT_NAME = 'LALCO Reasoning (IQ) Test';
+
+function seedIqQuestions() {
+  const existing = db.prepare("SELECT COUNT(*) AS n FROM questions WHERE question_family = 'IQ'").get().n;
+  if (existing > 0) {
+    console.log(`IQ bank already present (${existing} questions) - left untouched.`);
+    return;
+  }
+  const insert = db.prepare(
+    `INSERT INTO questions (id, type, order_index, category, difficulty, max_marks, text, config_json,
+       explanation, active, created_by, question_family, iq_category, translation_status)
+     VALUES (?, 'CALC', ?, ?, ?, ?, ?, ?, ?, 1, 'System (seed)', 'IQ', ?, 'MISSING')`
+  );
+  IQ_BANK.forEach((q, i) => {
+    const values = Object.keys(q.options);
+    const config = {
+      parts: [{
+        key: 'answer',
+        label: 'Answer',
+        marks: 1,
+        type: 'choice',
+        options: values,
+        optionLabels: q.options,
+        expected: q.correct,
+      }],
+    };
+    insert.run(generateId('q'), i, q.category, q.difficulty, 1, q.text,
+      JSON.stringify(config), q.explanation, q.category);
+  });
+  console.log(`Seeded ${IQ_BANK.length} IQ questions across ${new Set(IQ_BANK.map((q) => q.category)).size} categories.`);
+}
+
+function seedIqAssessment() {
+  const existing = db.prepare("SELECT id FROM assessments WHERE assessment_type = 'IQ_TEST' LIMIT 1").get();
+  if (existing) {
+    console.log('IQ test already exists - left untouched.');
+    return;
+  }
+  const id = 'asmt_iq_default';
+  const questions = db.prepare(
+    "SELECT id FROM questions WHERE question_family = 'IQ' AND active = 1 AND COALESCE(archived,0) = 0 ORDER BY order_index"
+  ).all();
+  const marks = questions.length;
+  db.prepare(
+    `INSERT INTO assessments (id, name, description, active, archived, duration_minutes, link_expiry_minutes,
+       calc_max, written_max, interview_max, total_max, pass_threshold, eligibility_rules_id,
+       assessment_type, iq_scoring_json, created_by)
+     VALUES (?,?,?,1,0,?,?,?,0,0,?,?,1,'IQ_TEST',?, 'System (seed)')`
+  ).run(
+    id,
+    IQ_ASSESSMENT_NAME,
+    'Reasoning test across numerical, logical, pattern, verbal, spatial and sequence questions. Marked automatically. Any estimated figure it reports is an estimate from this test alone and is not a clinically validated IQ.',
+    30,   // duration_minutes - configurable per assessment, not hardcoded in code
+    10,   // link_expiry_minutes
+    marks, marks,
+    50,   // pass_threshold, as a percentage for the IQ scoring model
+    JSON.stringify({ model: 'LINEAR_FROM_PERCENTAGE', mean: 100, scale: 0.6, min: 55, max: 145, estimatedIqEnabled: true, passThreshold: 50 })
+  );
+  const attach = db.prepare('INSERT OR IGNORE INTO assessment_questions (assessment_id, question_id, order_index) VALUES (?,?,?)');
+  questions.forEach((q, i) => attach.run(id, q.id, i));
+  console.log(`Created "${IQ_ASSESSMENT_NAME}" with ${questions.length} questions (30 minutes).`);
+}
+
 function seedAssessmentQuestions() {
   const targets = db.prepare(
     `SELECT a.id FROM assessments a
@@ -205,7 +387,7 @@ function seedAssessmentQuestions() {
   if (targets.length === 0) return;
   const questions = db.prepare(
     `SELECT id FROM questions
-      WHERE active = 1 AND COALESCE(archived,0) = 0
+      WHERE active = 1 AND COALESCE(archived,0) = 0 AND question_family = 'GENERAL'
       ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`
   ).all();
   const attach = db.prepare('INSERT OR IGNORE INTO assessment_questions (assessment_id, question_id, order_index) VALUES (?,?,?)');
@@ -265,7 +447,7 @@ function seedDemoCandidates() {
 
   const eligRules = db.prepare('SELECT * FROM eligibility_rules WHERE id = 1').get();
   const settings = db.prepare('SELECT * FROM settings WHERE id = 1').get();
-  const questions = db.prepare('SELECT * FROM questions WHERE active = 1').all().map((q) => ({ ...q, config: JSON.parse(q.config_json) }));
+  const questions = db.prepare("SELECT * FROM questions WHERE active = 1 AND question_family = 'GENERAL'").all().map((q) => ({ ...q, config: JSON.parse(q.config_json) }));
   const calcQuestions = questions.filter((q) => q.type === 'CALC');
   const criteria = db.prepare('SELECT * FROM interview_criteria ORDER BY order_index').all();
   const recruiter = db.prepare(`SELECT id FROM users WHERE role = 'HR_ADMIN' LIMIT 1`).get();
@@ -391,6 +573,8 @@ const runSeed = db.transaction(() => {
   seedUsers(seedPassword);
   seedQuestions();
   seedAssessmentQuestions();
+  seedIqQuestions();
+  seedIqAssessment();
   seedInterview();
   seedScholarship();
   if (wantsDemo) {

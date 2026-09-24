@@ -312,7 +312,7 @@ function liveAssessments() {
       ORDER BY s.started_at DESC`
   ).all();
 
-  const totalQuestions = db.prepare('SELECT COUNT(*) AS n FROM questions WHERE active = 1').get().n;
+  const totalQuestions = db.prepare("SELECT COUNT(*) AS n FROM questions WHERE active = 1 AND question_family = 'GENERAL'").get().n;
 
   return sessions.map((s) => {
     const answered = db.prepare(

@@ -139,7 +139,7 @@ router.get('/:id', (req, res) => {
     scores = db.prepare('SELECT * FROM scores WHERE session_id = ?').get(session.id);
     integrity = db.prepare('SELECT * FROM integrity_assessments WHERE session_id = ?').get(session.id);
     const rawAnswers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(session.id);
-    const questions = db.prepare('SELECT * FROM questions WHERE active = 1 ORDER BY order_index').all();
+    const questions = db.prepare("SELECT * FROM questions WHERE active = 1 AND question_family = 'GENERAL' ORDER BY order_index").all();
     answers = questions.map((q) => {
       const a = rawAnswers.find((x) => x.question_id === q.id);
       const config = JSON.parse(q.config_json);
@@ -323,10 +323,15 @@ router.post('/:id/links', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (
   if (c.status === 'DRAFT') db.prepare(`UPDATE candidates SET status = 'INVITED' WHERE id = ?`).run(c.id);
   auditFromReq(req, 'Assessment link generated', c.code, null, { token: token.slice(0, 8) + '…', expiresAt, language });
   const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
+  // An IQ invitation opens the IQ portal. Same table, same opaque token, same
+  // expiry and revoke behaviour — only the page the candidate lands on differs,
+  // so the two products can never be confused for one another.
+  const assessmentType = assessment ? (assessment.assessment_type || 'GENERAL_ASSESSMENT') : 'GENERAL_ASSESSMENT';
+  const examPath = assessmentType === 'IQ_TEST' ? 'iq' : 'exam';
   res.status(201).json({
-    id, token, expiresAt, status: 'ACTIVE', language,
-    examUrl: `${baseUrl}/exam/${token}`,
-    whatsappMessage: `Dear ${c.full_name},\n\nYou are invited to complete the LALCO recruitment assessment.\n\nAssessment link:\n${baseUrl}/exam/${token}\n\nThis invitation link expires in ${s.link_expiry_minutes} minutes. Please complete the assessment within the allocated assessment time once you begin.\n\nThank you.`,
+    id, token, expiresAt, status: 'ACTIVE', language, assessmentType,
+    examUrl: `${baseUrl}/${examPath}/${token}`,
+    whatsappMessage: `Dear ${c.full_name},\n\nYou are invited to complete the LALCO ${assessmentType === 'IQ_TEST' ? 'reasoning (IQ) test' : 'recruitment assessment'}.\n\nAssessment link:\n${baseUrl}/${examPath}/${token}\n\nThis invitation link expires in ${s.link_expiry_minutes} minutes. Please complete the assessment within the allocated assessment time once you begin.\n\nThank you.`,
   });
 });
 

@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS questions (
   -- MISSING/DRAFT/APPROVED semantics are untouched and no live SQLite table has
   -- to be rebuilt to widen a CHECK constraint.
   translation_source TEXT CHECK(translation_source IN ('HUMAN','MACHINE')),
+  -- Which bank this question belongs to. `type` above stays the MARKING type
+  -- (CALC is objectively marked, ESSAY is human marked); this is the product it
+  -- was written for, so the two banks can be listed and managed separately
+  -- without a second questions table and without touching how marking works.
+  question_family TEXT NOT NULL DEFAULT 'GENERAL'
+    CHECK(question_family IN ('GENERAL','IQ')),
+  -- IQ reasoning category (numerical, logical, pattern, verbal, spatial,
+  -- sequence). NULL for a general-assessment question.
+  iq_category TEXT,
   translation_updated_by TEXT,
   translation_updated_at TEXT,
   archived INTEGER NOT NULL DEFAULT 0,
@@ -181,6 +190,15 @@ CREATE TABLE IF NOT EXISTS assessments (
   -- Eligibility policy this assessment is judged against. Today there is one
   -- singleton row; the column exists so more can be added without migration.
   eligibility_rules_id INTEGER NOT NULL DEFAULT 1 REFERENCES eligibility_rules(id),
+  -- Which product this assessment is. GENERAL_ASSESSMENT is the recruitment
+  -- assessment that existed before; IQ_TEST is the reasoning test. They share
+  -- the same session, link, timer, autosave and language machinery — only the
+  -- question set, the candidate UI and the scoring differ.
+  assessment_type TEXT NOT NULL DEFAULT 'GENERAL_ASSESSMENT'
+    CHECK(assessment_type IN ('GENERAL_ASSESSMENT','IQ_TEST')),
+  -- How an IQ test is scored, as configuration rather than code. NULL for a
+  -- general assessment. See lib/iqScoring.js for the shape and the defaults.
+  iq_scoring_json TEXT,
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -378,3 +396,41 @@ CREATE TABLE IF NOT EXISTS integrity_reviews (
   comment TEXT,
   reviewed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ---------------------------------------------------------------------------
+-- IQ test results.
+--
+-- A separate table rather than more columns on `scores`, because the two score
+-- different things: `scores` is the 30/30/40 recruitment model with a human
+-- marking stage, while an IQ test is objectively marked in one pass and is
+-- reported per reasoning category. Keeping them apart means neither reporting
+-- path has to learn about the other, and an IQ attempt can never be mistaken
+-- for a recruitment score in an export.
+--
+-- One row per session, so re-finalizing is idempotent.
+CREATE TABLE IF NOT EXISTS iq_results (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL UNIQUE REFERENCES assessment_sessions(id) ON DELETE CASCADE,
+  candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  assessment_id TEXT REFERENCES assessments(id),
+  total_questions INTEGER NOT NULL DEFAULT 0,
+  correct_count INTEGER NOT NULL DEFAULT 0,
+  incorrect_count INTEGER NOT NULL DEFAULT 0,
+  unanswered_count INTEGER NOT NULL DEFAULT 0,
+  raw_score INTEGER NOT NULL DEFAULT 0,
+  raw_max INTEGER NOT NULL DEFAULT 0,
+  percentage REAL NOT NULL DEFAULT 0,
+  -- Per reasoning category: {"NUMERICAL":{"correct":3,"total":4,"marks":3,"max":4}, ...}
+  category_scores_json TEXT,
+  -- Seconds actually spent, from the session's own start and finish times.
+  duration_seconds INTEGER,
+  -- OPTIONAL and clearly labelled everywhere it is shown. It is an estimate
+  -- produced by the configured scoring model, NOT a clinically validated IQ.
+  -- NULL when the assessment's scoring configuration does not enable it.
+  estimated_iq INTEGER,
+  -- The scoring configuration this attempt was judged under, snapshotted, so
+  -- changing the model later can never re-judge somebody who already sat it.
+  scoring_model_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_iq_results_candidate ON iq_results(candidate_id);

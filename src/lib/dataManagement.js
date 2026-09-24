@@ -43,7 +43,7 @@ function getDataStats() {
     answersStored: one('SELECT COUNT(*) AS n FROM candidate_answers'),
     googleSyncPending: one("SELECT COUNT(*) AS n FROM assessment_sessions WHERE google_sync_status = 'PENDING'"),
     auditRecords: one('SELECT COUNT(*) AS n FROM audit_logs'),
-    questionsInBank: one('SELECT COUNT(*) AS n FROM questions'),
+    questionsInBank: one("SELECT COUNT(*) AS n FROM questions WHERE question_family = 'GENERAL'"),
     adminUsers: one('SELECT COUNT(*) AS n FROM users'),
   };
 }

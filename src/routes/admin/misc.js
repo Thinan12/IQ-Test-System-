@@ -149,7 +149,7 @@ router.get('/analytics', (req, res) => {
   const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
   const buckets = [0, 0, 0, 0, 0];
   finals.forEach((f) => { buckets[Math.max(0, Math.min(4, Math.floor(f / 20)))]++; });
-  const questions = db.prepare(`SELECT * FROM questions WHERE type='CALC' AND active=1 ORDER BY order_index`).all();
+  const questions = db.prepare(`SELECT * FROM questions WHERE type='CALC' AND active=1 AND question_family='GENERAL' ORDER BY order_index`).all();
   const questionStats = questions.map((q) => {
     let attempts = 0, full = 0, partial = 0, failed = 0, timeSum = 0, timeN = 0, scoreSum = 0;
     withScores.forEach((w) => {

@@ -17,6 +17,7 @@ SUITES=(
   "test/bilingual.sh:Bilingual question bank + candidate language switch"
   "test/assessments.sh:Assessment management (CRUD, config, historical safety)"
   "test/flags_print.sh:Question flags + print views (Phase 3)"
+  "test/iq_test.sh:IQ test module (bank, candidate journey, scoring)"
   "test/security_check.sh:Security verification (section 16)"
   "test/auto_submit.sh:Auto-submit on time expiry (sections 1-8)"
   "test/deployment.sh:Deployment readiness (sections 9-15)"

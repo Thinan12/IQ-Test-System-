@@ -53,6 +53,16 @@ ensureColumn('questions', 'archived_by', 'TEXT');
 // exactly what it was. translation_status is untouched.
 ensureColumn('questions', 'translation_source', 'TEXT');
 
+// IQ test module. Every column is additive with a default that describes what
+// the row already was, so no existing assessment, question, link or completed
+// session changes meaning. The CHECK constraints live in schema.sql for fresh
+// databases; on an existing one the routes are the authority, exactly as for
+// assessment_links.language.
+ensureColumn('questions', 'question_family', "TEXT NOT NULL DEFAULT 'GENERAL'");
+ensureColumn('questions', 'iq_category', 'TEXT');
+ensureColumn('assessments', 'assessment_type', "TEXT NOT NULL DEFAULT 'GENERAL_ASSESSMENT'");
+ensureColumn('assessments', 'iq_scoring_json', 'TEXT');
+
 // Candidate display language for a session. Presentation only.
 ensureColumn('assessment_sessions', 'language', "TEXT NOT NULL DEFAULT 'en'");
 
@@ -135,7 +145,7 @@ const migrateAssessments = db.transaction(() => {
     // Attach the question set exactly as the exam already serves it.
     const questions = db.prepare(
       `SELECT id FROM questions
-        WHERE active = 1 AND COALESCE(archived,0) = 0
+        WHERE active = 1 AND COALESCE(archived,0) = 0 AND question_family = 'GENERAL'
         ORDER BY CASE type WHEN 'CALC' THEN 0 ELSE 1 END, order_index`
     ).all();
     const attach = db.prepare('INSERT OR IGNORE INTO assessment_questions (assessment_id, question_id, order_index) VALUES (?,?,?)');

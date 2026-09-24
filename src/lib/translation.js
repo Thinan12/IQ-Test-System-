@@ -19,12 +19,11 @@
 // only thing the admin UI is told is the boolean from isTranslationConfigured().
 const { LANGUAGES } = require('./questionText');
 
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const API_VERSION = '2023-06-01';
-// The project has no standard model configuration, so this is a constant
-// rather than another environment variable to get wrong in deployment.
-const MODEL = 'claude-sonnet-5';
-const MAX_TOKENS = 2048;
+const API_URL = 'https://api.openai.com/v1/responses';
+// Overridable because an OpenAI key's model access varies by account: if the
+// default is not enabled on yours, set OPENAI_MODEL rather than editing code.
+const MODEL = String(process.env.OPENAI_MODEL || '').trim() || 'gpt-4.1';
+const MAX_OUTPUT_TOKENS = 2048;
 const TIMEOUT_MS = 30000;
 
 // Payload ceilings. A recruitment question is a paragraph, not a document;
@@ -39,7 +38,7 @@ const LANGUAGE_NAMES = { en: 'English', lo: 'Lao' };
 
 /** True when a provider key is configured. The KEY ITSELF never leaves here. */
 function isTranslationConfigured() {
-  return !!String(process.env.ANTHROPIC_API_KEY || '').trim();
+  return !!String(process.env.OPENAI_API_KEY || '').trim();
 }
 
 /** A stable, typed error so the route can map causes to status codes. */
@@ -179,22 +178,26 @@ function buildPrompt(request) {
   ].join('\n');
 }
 
-// Structured output: the provider is given a tool whose schema IS the shape we
-// accept, and is forced to use it. That avoids parsing prose, and the result is
-// still validated above rather than trusted.
-const TRANSLATION_TOOL = {
-  name: 'emit_translation',
-  description: 'Return the translated question and option labels.',
-  input_schema: {
+// Structured output: the response format IS the shape we accept, enforced by
+// the provider in strict mode. That avoids parsing prose. The result is still
+// validated by validateProviderTranslation() rather than trusted — strict mode
+// guarantees the SHAPE, not that the canonical values were left alone.
+const TRANSLATION_SCHEMA = {
+  name: 'question_translation',
+  strict: true,
+  schema: {
     type: 'object',
+    additionalProperties: false,
     properties: {
       question: { type: 'string', description: 'The translated question text.' },
       options: {
         type: 'array',
+        description: 'One entry per option given, in the same order.',
         items: {
           type: 'object',
+          additionalProperties: false,
           properties: {
-            value: { type: 'string', description: 'The canonical option value, unchanged.' },
+            value: { type: 'string', description: 'The canonical option value, copied through unchanged.' },
             label: { type: 'string', description: 'The translated, human-readable option label.' },
           },
           required: ['value', 'label'],
@@ -204,6 +207,27 @@ const TRANSLATION_TOOL = {
     required: ['question', 'options'],
   },
 };
+
+/**
+ * Pull the JSON payload out of a Responses API result.
+ *
+ * The raw HTTP response has no `output_text` convenience field (that belongs to
+ * the SDKs), so the message content is walked directly. A refusal block is
+ * treated as no text at all, which surfaces as BAD_PROVIDER_RESPONSE rather
+ * than being parsed as if it were a translation.
+ */
+function extractOutputText(data) {
+  const output = Array.isArray(data && data.output) ? data.output : [];
+  for (const item of output) {
+    if (!item || item.type !== 'message' || !Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (part && part.type === 'output_text' && typeof part.text === 'string' && part.text.trim()) {
+        return part.text;
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Translate one question. Throws TranslationError; never leaks provider detail.
@@ -224,15 +248,15 @@ async function translateQuestion(body) {
       signal: controller.signal,
       headers: {
         'content-type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': API_VERSION,
+        authorization: 'Bearer ' + process.env.OPENAI_API_KEY,
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: MAX_TOKENS,
-        tools: [TRANSLATION_TOOL],
-        tool_choice: { type: 'tool', name: TRANSLATION_TOOL.name },
-        messages: [{ role: 'user', content: buildPrompt(request) }],
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+        // Deterministic wording matters more than variety for an exam question.
+        temperature: 0,
+        input: [{ role: 'user', content: buildPrompt(request) }],
+        text: { format: { type: 'json_schema', ...TRANSLATION_SCHEMA } },
       }),
     });
   } catch (e) {
@@ -257,14 +281,22 @@ async function translateQuestion(body) {
   try { data = await res.json(); }
   catch (e) { throw new TranslationError('BAD_PROVIDER_RESPONSE', 'The translation service returned an unreadable result.'); }
 
-  const block = Array.isArray(data && data.content)
-    ? data.content.find((c) => c && c.type === 'tool_use' && c.name === TRANSLATION_TOOL.name)
-    : null;
-  if (!block) {
+  // A refusal or a truncated response is a failure, not a translation.
+  if (data && data.status && data.status !== 'completed') {
+    console.warn('[translation] provider status ' + data.status);
+    throw new TranslationError('BAD_PROVIDER_RESPONSE', 'The translation service did not complete the request.');
+  }
+
+  const text = extractOutputText(data);
+  if (!text) {
     throw new TranslationError('BAD_PROVIDER_RESPONSE', 'The translation service returned an unexpected result.');
   }
 
-  return validateProviderTranslation(block.input, request);
+  let parsed;
+  try { parsed = JSON.parse(text); }
+  catch (e) { throw new TranslationError('BAD_PROVIDER_RESPONSE', 'The translation service returned malformed JSON.'); }
+
+  return validateProviderTranslation(parsed, request);
 }
 
 module.exports = {
