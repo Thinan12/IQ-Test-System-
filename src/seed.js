@@ -358,10 +358,16 @@ function seedIqAssessment() {
   ).all();
   const marks = questions.length;
   db.prepare(
+    // randomize_questions / randomize_question_order are ON: an IQ test draws a
+    // fresh paper per candidate. questions_to_show is left NULL, meaning "the
+    // whole eligible pool", so the seeded test asks every seeded question — in
+    // its own order per candidate. An administrator sets a smaller number once
+    // the bank is bigger than one sitting should contain.
     `INSERT INTO assessments (id, name, description, active, archived, duration_minutes, link_expiry_minutes,
        calc_max, written_max, interview_max, total_max, pass_threshold, eligibility_rules_id,
-       assessment_type, iq_scoring_json, created_by)
-     VALUES (?,?,?,1,0,?,?,?,0,0,?,?,1,'IQ_TEST',?, 'System (seed)')`
+       assessment_type, iq_scoring_json, randomize_questions, questions_to_show,
+       randomize_question_order, randomize_options, created_by)
+     VALUES (?,?,?,1,0,?,?,?,0,0,?,?,1,'IQ_TEST',?, 1, NULL, 1, 0, 'System (seed)')`
   ).run(
     id,
     IQ_ASSESSMENT_NAME,

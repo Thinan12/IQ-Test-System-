@@ -5,6 +5,7 @@ const { finalizeSession, finalizeIfExpired, isExpired, displayStatus } = require
 const { isPaused, linkLiveStatus, remainingSeconds } = require('../lib/examControl');
 const { resolveQuestionText, normaliseLanguage, DEFAULT_LANGUAGE } = require('../lib/questionText');
 const { examLimiter, flagLimiter } = require('../middleware/auth');
+const selection = require('../lib/questionSelection');
 const { audit } = require('../lib/audit');
 
 const router = express.Router();
@@ -17,9 +18,27 @@ function lookupName(table, id) {
 }
 function settings() { return db.prepare('SELECT * FROM settings WHERE id = 1').get(); }
 
+// Put a choice part's options into THIS attempt's order. `optionOrder` is a
+// list of canonical values; anything the attempt does not mention keeps its
+// configured position at the end. The canonical value travels with each option
+// and is what the answer is stored and marked by, so reordering what the
+// candidate sees can never change a mark, and two candidates who both answer
+// correctly both score, whatever order they saw.
+function orderOptions(options, optionOrder) {
+  if (!Array.isArray(options) || !Array.isArray(optionOrder) || !optionOrder.length) return options;
+  const byValue = new Map(options.map((o) => [String(o.value), o]));
+  const out = [];
+  optionOrder.forEach((v) => {
+    const o = byValue.get(String(v));
+    if (o) { out.push(o); byValue.delete(String(v)); }
+  });
+  options.forEach((o) => { if (byValue.has(String(o.value))) out.push(o); });
+  return out;
+}
+
 // Strips everything an evaluator needs but a candidate must never receive:
 // correct answers, tolerances, marking weights per step's expected value, explanations.
-function sanitizeQuestionForCandidate(q, language) {
+function sanitizeQuestionForCandidate(q, language, optionOrder) {
   const config = JSON.parse(q.config_json);
   // English is the source; Lao is shown only when a human has APPROVED it.
   const t = resolveQuestionText(q, language);
@@ -49,7 +68,7 @@ function sanitizeQuestionForCandidate(q, language) {
         type: p.type === 'choice' ? 'choice' : 'number',
         // {value,label}: VALUE is the canonical English string grading compares
         // against, so translating a label can never change a mark.
-        options: p.type === 'choice' ? t.partOptions(p) : undefined,
+        options: p.type === 'choice' ? orderOptions(t.partOptions(p), optionOrder) : undefined,
         // marks-per-part shown so the candidate understands question weight, NOT the expected value or tolerance
         marks: p.marks,
       })),
@@ -138,7 +157,9 @@ function respondWithCandidateContext(req, res, link, session) {
     candidateCode: session ? c.code : undefined,
     position: lookupName('positions', c.applied_position_id) || c.applied_position_id,
     assessmentName: assessment ? assessment.name : 'LALCO Recruitment Assessment',
-    questionCount: attachedCount || calcCount + essayCount,
+    questionCount: (session && selection.sessionIsSelected(session.id))
+      ? selection.sessionSelection(session.id).length
+      : (selection.plannedQuestionCount(assessment) || attachedCount || calcCount + essayCount),
     durationMinutes: assessment ? assessment.duration_minutes : s.assessment_duration_minutes,
     verification: { requireCandidateId: !!s.require_candidate_id, requirePhone: !!s.require_phone, requireDob: !!s.require_dob },
     // The language this invitation was generated for. The portal opens in it
@@ -216,6 +237,20 @@ router.post('/:token/start', (req, res) => {
     return res.status(401).json({ error: 'Date of birth does not match our records.' });
   }
 
+  // The question set has to be satisfiable BEFORE anything is written. A pool
+  // too small for the configuration is a misconfiguration, not a candidate
+  // problem, so the attempt is refused whole rather than started short.
+  const selectionProblems = selection.validateSelection(assessment);
+  if (selectionProblems.length) {
+    return res.status(409).json({
+      error: 'This assessment is not ready to be sat. Please contact the recruitment team.',
+      // The administrator's detail, not the candidate's: it names no question,
+      // no answer and no id, only how many were needed and how many exist.
+      configurationError: selectionProblems[0],
+      configurationErrors: selectionProblems,
+    });
+  }
+
   const id = generateId('sess');
   const now = new Date();
   const expiresAt = new Date(now.getTime() + durationMinutes * 60000).toISOString();
@@ -225,19 +260,39 @@ router.post('/:token/start', (req, res) => {
   // sat in Lao without the candidate doing anything. Either way this is
   // presentation only: the deadline, answers and marking are untouched.
   const startLanguage = normaliseLanguage(b.language || link.language);
-  db.prepare(
-    `INSERT INTO assessment_sessions (id, candidate_id, link_id, assessment_id, started_at, duration_minutes,
-       expires_at, status, verified, language, pass_threshold, total_max)
-     VALUES (?,?,?,?,?,?,?,'IN_PROGRESS',1,?,?,?)`
-  ).run(
-    id, c.id, link.id, assessment ? assessment.id : null, now.toISOString(), durationMinutes,
-    expiresAt, startLanguage,
-    // Snapshot: this attempt is judged by these numbers for ever.
-    assessment ? assessment.pass_threshold : s.pass_threshold,
-    assessment ? assessment.total_max : 100
-  );
-  db.prepare(`UPDATE assessment_links SET status='USED' WHERE id=?`).run(link.id);
-  db.prepare(`UPDATE candidates SET status='ASSESSMENT_STARTED' WHERE id=?`).run(c.id);
+  // The attempt and the questions it consists of are written together. If the
+  // draw cannot be satisfied the whole thing rolls back, so there is never a
+  // session with a partial question set for somebody to sit.
+  try {
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO assessment_sessions (id, candidate_id, link_id, assessment_id, started_at, duration_minutes,
+           expires_at, status, verified, language, pass_threshold, total_max)
+         VALUES (?,?,?,?,?,?,?,'IN_PROGRESS',1,?,?,?)`
+      ).run(
+        id, c.id, link.id, assessment ? assessment.id : null, now.toISOString(), durationMinutes,
+        expiresAt, startLanguage,
+        // Snapshot: this attempt is judged by these numbers for ever.
+        assessment ? assessment.pass_threshold : s.pass_threshold,
+        assessment ? assessment.total_max : 100
+      );
+      // Decided ONCE, here. Everything the candidate does afterwards reads
+      // these rows; nothing re-runs the draw.
+      if (assessment && selection.selectionConfigFor(assessment).enabled) {
+        selection.materializeSelection(id, assessment);
+      }
+      db.prepare(`UPDATE assessment_links SET status='USED' WHERE id=?`).run(link.id);
+      db.prepare(`UPDATE candidates SET status='ASSESSMENT_STARTED' WHERE id=?`).run(c.id);
+    })();
+  } catch (err) {
+    if (err instanceof selection.SelectionError) {
+      return res.status(409).json({
+        error: 'This assessment is not ready to be sat. Please contact the recruitment team.',
+        configurationError: err.message,
+      });
+    }
+    throw err;
+  }
   audit({ userName: 'Candidate (public exam)', role: 'CANDIDATE', action: 'Assessment started', target: c.code, ip: req.ip });
   res.json({
     started: true, expiresAt, scheduledEndAt: expiresAt, language: startLanguage,
@@ -312,7 +367,43 @@ function familyForSession(session) {
 // Falls back to "every active question" for a session with no assessment
 // (a database predating assessment management). This is also the authority on
 // which questions a session is allowed to touch at all.
+// The option order stored for this attempt, if any. Comes from the joined
+// session_questions row, so it is per attempt and never per browser.
+function parseOptionOrder(q) {
+  if (!q || !q.sq_option_order_json) return null;
+  try {
+    const parsed = JSON.parse(q.sq_option_order_json);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (e) { return null; }
+}
+
+// The one question this attempt may see under this id. When the attempt has a
+// materialised set, belonging to that set is the only thing that qualifies: a
+// candidate cannot reach a question they were not given by sending its id, and
+// cannot answer one either.
+function questionForSession(session, questionId) {
+  const isSelected = selection.sessionIsSelected(session.id);
+  if (isSelected && !selection.sessionHasQuestion(session.id, questionId)) return null;
+  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND active = 1 AND question_family = ?')
+    .get(questionId, familyForSession(session));
+  if (!q) return null;
+  if (isSelected) {
+    const row = db.prepare(
+      'SELECT option_order_json FROM session_questions WHERE session_id = ? AND question_id = ?'
+    ).get(session.id, questionId);
+    if (row) q.sq_option_order_json = row.option_order_json;
+  }
+  return q;
+}
+
 function questionsForSession(session) {
+  // An attempt with a materialised set is answered by that set and nothing
+  // else. These rows are written once, when the attempt is initialised, so a
+  // reload, a language switch, reopening the link or navigating cannot change
+  // what this candidate is asked.
+  const selected = selection.sessionQuestions(session.id);
+  if (selected.length) return selected;
+
   const attached = session.assessment_id
     ? db.prepare(
         `SELECT q.* FROM assessment_questions aq
@@ -343,7 +434,7 @@ router.get('/:token/questions', requireActiveSession, (req, res) => {
   res.json({
     language: lang,
     assessmentType: asmt ? (asmt.assessment_type || 'GENERAL_ASSESSMENT') : 'GENERAL_ASSESSMENT',
-    questions: questions.map((q) => sanitizeQuestionForCandidate(q, lang)),
+    questions: questions.map((q) => sanitizeQuestionForCandidate(q, lang, parseOptionOrder(q))),
     answered: answers.filter((a) => a.answer_json && a.answer_json !== '{}').map((a) => a.question_id),
     // Flags travel with the question list, so they survive a reload, a
     // reconnect, navigation and a language switch without a separate request.
@@ -354,8 +445,7 @@ router.get('/:token/questions', requireActiveSession, (req, res) => {
 
 // ---- Get one question (sanitized) with any previously saved raw answer for prefill ----
 router.get('/:token/question/:qid', requireActiveSession, (req, res) => {
-  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND active = 1 AND question_family = ?')
-    .get(req.params.qid, familyForSession(req.session_));
+  const q = questionForSession(req.session_, req.params.qid);
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   let ans = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ? AND question_id = ?').get(req.session_.id, q.id);
   if (!ans) {
@@ -366,7 +456,7 @@ router.get('/:token/question/:qid', requireActiveSession, (req, res) => {
     db.prepare('UPDATE candidate_answers SET visits = visits + 1 WHERE id = ?').run(ans.id);
   }
   res.json({
-    question: sanitizeQuestionForCandidate(q, req.session_.language || DEFAULT_LANGUAGE),
+    question: sanitizeQuestionForCandidate(q, req.session_.language || DEFAULT_LANGUAGE, parseOptionOrder(q)),
     savedAnswer: ans.answer_json ? JSON.parse(ans.answer_json) : null,
     flagged: !!ans.flagged,
     flaggedAt: ans.flagged ? ans.flagged_at : null,
@@ -456,8 +546,7 @@ router.get('/:token/flags', requireActiveSession, (req, res) => {
 // ---- Save / autosave an answer ----
 router.post('/:token/answer', requireActiveSession, (req, res) => {
   const { questionId, answer, timeSpentDeltaSeconds } = req.body || {};
-  const q = db.prepare('SELECT * FROM questions WHERE id = ? AND active = 1 AND question_family = ?')
-    .get(questionId, familyForSession(req.session_));
+  const q = questionForSession(req.session_, questionId);
   if (!q) return res.status(404).json({ error: 'Question not found.' });
   const existing = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ? AND question_id = ?').get(req.session_.id, questionId);
   const now = new Date().toISOString();

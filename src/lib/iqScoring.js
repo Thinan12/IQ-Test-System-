@@ -106,12 +106,18 @@ function computeIqResult(session) {
     : null;
   const cfg = scoringConfigFor(assessment);
 
-  const questions = session.assessment_id
-    ? db.prepare(
-        `SELECT q.* FROM assessment_questions aq JOIN questions q ON q.id = aq.question_id
-          WHERE aq.assessment_id = ? ORDER BY aq.order_index`
-      ).all(session.assessment_id)
-    : [];
+  // Mark the questions THIS attempt was given. With random selection every
+  // candidate sits a different paper, so marking the assessment's whole bank
+  // would count questions this candidate was never shown as wrong.
+  const assigned = require('./questionSelection').sessionQuestions(session.id);
+  const questions = assigned.length
+    ? assigned
+    : (session.assessment_id
+      ? db.prepare(
+          `SELECT q.* FROM assessment_questions aq JOIN questions q ON q.id = aq.question_id
+            WHERE aq.assessment_id = ? ORDER BY aq.order_index`
+        ).all(session.assessment_id)
+      : []);
 
   const answers = {};
   db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(session.id)

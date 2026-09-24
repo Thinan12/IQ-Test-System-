@@ -301,6 +301,22 @@ function extendLinkExpiry(linkId, addMinutes, actor) {
   return { link: updated, status: linkLiveStatus(updated) };
 }
 
+// How many questions ONE sitting contains: the set it was actually given when
+// it has one, otherwise the assessment it was issued for, otherwise the
+// recruitment bank — which is what this was before either existed.
+function questionCountForSession(sessionId, assessmentId) {
+  const drawn = db.prepare('SELECT COUNT(*) AS n FROM session_questions WHERE session_id = ?').get(sessionId).n;
+  if (drawn) return drawn;
+  if (assessmentId) {
+    const attached = db.prepare(
+      `SELECT COUNT(*) AS n FROM assessment_questions aq JOIN questions q ON q.id = aq.question_id
+        WHERE aq.assessment_id = ? AND q.active = 1 AND COALESCE(q.archived,0) = 0`
+    ).get(assessmentId).n;
+    if (attached) return attached;
+  }
+  return db.prepare("SELECT COUNT(*) AS n FROM questions WHERE active = 1 AND question_family = 'GENERAL'").get().n;
+}
+
 // --------------------------------------------------------- LIVE DASHBOARD
 /** Everything Admin -> Live Assessments needs, in one query per session. */
 function liveAssessments() {
@@ -312,9 +328,8 @@ function liveAssessments() {
       ORDER BY s.started_at DESC`
   ).all();
 
-  const totalQuestions = db.prepare("SELECT COUNT(*) AS n FROM questions WHERE active = 1 AND question_family = 'GENERAL'").get().n;
-
   return sessions.map((s) => {
+    const totalQuestions = questionCountForSession(s.id, s.assessment_id);
     const answered = db.prepare(
       `SELECT COUNT(*) AS n FROM candidate_answers
         WHERE session_id = ? AND answer_json IS NOT NULL AND answer_json NOT IN ('{}','null','')`

@@ -351,10 +351,10 @@ async function renderQuestion() {
     ${question.laoUnavailable ? `<div class="notice"><b>${esc(t('laoUnavailableTitle'))}</b><div class="faint" style="margin-top:4px;">${esc(t('laoUnavailable'))}</div></div>` : ''}
     <div class="qcat">${esc(categoryLabel(question.category))}</div>
     <div class="qstem">${esc(question.text)}</div>
-    <div id="opts">${(part.options || []).map((o) => `
+    <div id="opts">${(part.options || []).map((o, i) => `
       <label class="qopt ${chosen === String(o.value) ? 'checked' : ''}">
         <input type="radio" name="opt" value="${esc(o.value)}" ${chosen === String(o.value) ? 'checked' : ''}>
-        <span class="qoptval">${esc(o.value)}</span><span>${esc(o.label)}</span>
+        <span class="qoptval">${esc(String.fromCharCode(65 + i))}</span><span>${esc(o.label)}</span>
       </label>`).join('')}</div>
   `, {
     timer: true,

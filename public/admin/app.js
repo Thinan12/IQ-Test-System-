@@ -860,6 +860,8 @@ async function openAssessmentModal(assessment, onDone, readOnly) {
     name: '', description: '', duration_minutes: 45, link_expiry_minutes: 10,
     calc_max: 30, written_max: 30, interview_max: 40, total_max: 100,
     pass_threshold: 70, eligibility_rules_id: 1,
+    randomizeQuestions: false, questionsToShow: null,
+    randomizeQuestionOrder: false, randomizeOptions: false,
   };
 
   const bg = document.createElement('div');
@@ -894,6 +896,37 @@ async function openAssessmentModal(assessment, onDone, readOnly) {
         <span class="faint">Configured under Admin Settings.</span></div>
     </div>
     <p class="faint">Calculation + written + interview must equal the total. Completed assessments keep the threshold they were judged under.</p>
+
+    <div class="field-label">Random question selection</div>
+    <div class="grid grid-3" style="gap:12px;">
+      <div class="field"><label class="field-label">Random selection</label>
+        <select id="aRandom" ${ro}>
+          <option value="0" ${a.randomizeQuestions ? '' : 'selected'}>Off — every candidate sits the same questions</option>
+          <option value="1" ${a.randomizeQuestions ? 'selected' : ''}>On — each candidate gets their own draw</option>
+        </select></div>
+      <div class="field"><label class="field-label">Questions shown</label>
+        <input type="number" id="aShow" ${ro} min="1" max="500"
+               value="${a.questionsToShow != null ? a.questionsToShow : ''}" placeholder="All of them">
+        <span class="faint">Blank uses the whole pool below.</span></div>
+      <div class="field"><label class="field-label">Question pool</label>
+        <input id="aPool" disabled value="${a.eligibleQuestionCount != null ? a.eligibleQuestionCount + ' eligible' : 'set by the list below'}">
+        <span class="faint">The questions ticked below, of this assessment's own type.</span></div>
+      <div class="field"><label class="field-label">Randomize question order</label>
+        <select id="aRandomOrder" ${ro}>
+          <option value="0" ${a.randomizeQuestionOrder ? '' : 'selected'}>Off</option>
+          <option value="1" ${a.randomizeQuestionOrder ? 'selected' : ''}>On</option>
+        </select></div>
+      <div class="field"><label class="field-label">Randomize answer options</label>
+        <select id="aRandomOpts" ${ro}>
+          <option value="0" ${a.randomizeOptions ? '' : 'selected'}>Off</option>
+          <option value="1" ${a.randomizeOptions ? 'selected' : ''}>On</option>
+        </select>
+        <span class="faint">Only applies to reasoning multiple-choice questions.</span></div>
+    </div>
+    <p class="faint">A candidate's questions are chosen once, when they start, and stored against that attempt: reloading, switching language or reopening the link never changes them.${
+      (a.selectionProblems && a.selectionProblems.length)
+        ? ' <strong style="color:#b00020;">' + esc(a.selectionProblems[0]) + '</strong>'
+        : ''}</p>
 
     <div class="field-label">Questions — drawn from the Question Bank by reference, never copied</div>
     <div class="table-wrap" style="max-height:260px;overflow:auto;"><table><thead><tr><th style="width:40px;">Use</th><th>Question</th><th>Type</th><th>Marks</th><th>Lao</th><th style="width:90px;">Order</th></tr></thead>
@@ -944,6 +977,10 @@ async function openAssessmentModal(assessment, onDone, readOnly) {
       total_max: Number($('#aTotal', bg).value),
       pass_threshold: Number($('#aThreshold', bg).value),
       eligibility_rules_id: Number($('#aEligibility', bg).value),
+      randomizeQuestions: $('#aRandom', bg).value === '1',
+      questionsToShow: $('#aShow', bg).value === '' ? null : Number($('#aShow', bg).value),
+      randomizeQuestionOrder: $('#aRandomOrder', bg).value === '1',
+      randomizeOptions: $('#aRandomOpts', bg).value === '1',
       questionIds,
     };
     if (!payload.name) return toast('An assessment name is required.', true);
@@ -1809,7 +1846,19 @@ function openIqTestModal(onDone) {
         <select id="itEst"><option value="1">Publish an estimated figure</option><option value="0">Raw score and percentage only</option></select>
         <span class="faint">An estimate from this test only — never a clinical IQ.</span></div>
     </div>
-    <p class="faint">Questions are attached afterwards in Assessments, from the IQ bank.</p>
+    <div class="field-label">Random question selection</div>
+    <div class="grid grid-2" style="gap:12px;">
+      <div class="field"><label class="field-label">Random selection</label>
+        <select id="itRandom"><option value="1" selected>On — each candidate gets their own draw</option><option value="0">Off</option></select></div>
+      <div class="field"><label class="field-label">Questions shown</label>
+        <input id="itShow" type="number" min="1" max="500" placeholder="All attached questions">
+        <span class="faint">Blank shows every question attached to the test.</span></div>
+      <div class="field"><label class="field-label">Randomize question order</label>
+        <select id="itRandomOrder"><option value="1" selected>On</option><option value="0">Off</option></select></div>
+      <div class="field"><label class="field-label">Randomize answer options</label>
+        <select id="itRandomOpts"><option value="0" selected>Off</option><option value="1">On</option></select></div>
+    </div>
+    <p class="faint">Questions are attached afterwards in Assessments, from the IQ bank. Each candidate's questions are drawn once, when they start, and never change for that attempt.</p>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn" id="itCancel">Cancel</button>
       <button class="btn btn-primary" id="itSave" data-busy="Creating…">Create IQ test</button>
@@ -1830,6 +1879,10 @@ function openIqTestModal(onDone) {
         duration_minutes: Number($('#itDur', bg).value) || 30,
         link_expiry_minutes: Number($('#itExp', bg).value) || 10,
         iqScoring: { ...d, passThreshold: Number($('#itPass', bg).value), estimatedIqEnabled: $('#itEst', bg).value === '1' },
+        randomizeQuestions: $('#itRandom', bg).value === '1',
+        questionsToShow: $('#itShow', bg).value === '' ? null : Number($('#itShow', bg).value),
+        randomizeQuestionOrder: $('#itRandomOrder', bg).value === '1',
+        randomizeOptions: $('#itRandomOpts', bg).value === '1',
       }),
     });
     toast('IQ test created. Attach questions in Assessments.');

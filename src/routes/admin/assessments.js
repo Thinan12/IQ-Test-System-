@@ -14,6 +14,8 @@ const { auditFromReq } = require('../../lib/audit');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 
 const { scoringConfigFor, validateScoringConfig } = require('../../lib/iqScoring');
+const selection = require('../../lib/questionSelection');
+const { CATEGORIES } = require('../../lib/iqQuestions');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -61,7 +63,51 @@ function shape(a, { withQuestions = true } = {}) {
     // admin sees what a candidate would actually be judged by. NULL for a
     // general assessment, which is scored by the 30/30/40 recruitment model.
     iqScoring: (a.assessment_type === 'IQ_TEST') ? scoringConfigFor(a) : null,
+    // Random question selection, as configured and as resolved.
+    randomizeQuestions: !!a.randomize_questions,
+    questionsToShow: a.questions_to_show != null ? Number(a.questions_to_show) : null,
+    randomizeQuestionOrder: !!a.randomize_question_order,
+    randomizeOptions: !!a.randomize_options,
+    selectionRules: (() => {
+      try { return a.selection_rules_json ? JSON.parse(a.selection_rules_json) : null; }
+      catch (e) { return null; }
+    })(),
+    // How big each attempt will be, and the eligible pool it is drawn from, so
+    // an administrator can see at a glance whether the numbers work.
+    eligibleQuestionCount: selection.eligiblePool(a).length,
+    attemptQuestionCount: selection.plannedQuestionCount(a),
+    // Empty when the assessment can be sat. Anything here blocks an invitation.
+    selectionProblems: selection.validateSelection(a),
   };
+}
+
+const VALID_CATEGORIES = CATEGORIES.map((c) => c.key);
+
+// Validate a {BUCKET: count} quota map against a fixed vocabulary.
+function validateQuotas(spec, allowed, label) {
+  const errors = [];
+  if (spec === null || spec === undefined) return errors;
+  if (typeof spec !== 'object' || Array.isArray(spec)) {
+    return [`${label} distribution must be an object of counts.`];
+  }
+  let total = 0;
+  Object.keys(spec).forEach((key) => {
+    const bucket = String(key).toUpperCase();
+    if (!allowed.includes(bucket)) {
+      errors.push(`Unknown ${label.toLowerCase()} "${key}". Expected one of: ${allowed.join(', ')}.`);
+      return;
+    }
+    const n = spec[key];
+    if (!Number.isInteger(n) || n < 0) {
+      errors.push(`${label} ${bucket} must be a whole number of questions, zero or more.`);
+      return;
+    }
+    total += n;
+  });
+  if (!errors.length && total <= 0) {
+    errors.push(`The ${label.toLowerCase()} distribution must ask for at least one question.`);
+  }
+  return errors;
 }
 
 function validate(body, { partial = false, existing = null, id = null } = {}) {
@@ -80,6 +126,50 @@ function validate(body, { partial = false, existing = null, id = null } = {}) {
   if (body.iqScoring !== undefined && body.iqScoring !== null) {
     const errs = validateScoringConfig(body.iqScoring);
     if (errs.length) return errs;
+  }
+  if (body.questionsToShow !== undefined && body.questionsToShow !== null) {
+    const n = body.questionsToShow;
+    if (!Number.isInteger(n) || n < 1) {
+      return ['Questions shown must be a whole number of at least 1.'];
+    }
+  }
+  if (body.selectionRules !== undefined && body.selectionRules !== null) {
+    const r = body.selectionRules;
+    if (typeof r !== 'object' || Array.isArray(r)) {
+      return ['selectionRules must be an object.'];
+    }
+    if (r.byCategory && r.byDifficulty) {
+      return ['Configure a category distribution or a difficulty distribution, not both.'];
+    }
+    const type = body.assessmentType !== undefined
+      ? String(body.assessmentType).toUpperCase()
+      : ((existing && existing.assessment_type) || 'GENERAL_ASSESSMENT');
+    if (r.byCategory) {
+      if (type !== 'IQ_TEST') {
+        return ['Only an IQ test has reasoning categories to distribute across.'];
+      }
+      const errs = validateQuotas(r.byCategory, VALID_CATEGORIES, 'Category');
+      if (errs.length) return errs;
+    }
+    if (r.byDifficulty) {
+      const errs = validateQuotas(r.byDifficulty, selection.DIFFICULTIES, 'Difficulty');
+      if (errs.length) return errs;
+    }
+    // A distribution and a separate total must agree, or an attempt would be
+    // neither the configured size nor the configured shape. Checked against the
+    // values this request leaves behind, not just the ones it sends.
+    const quotas = r.byCategory || r.byDifficulty;
+    if (quotas) {
+      const quotaTotal = Object.keys(quotas)
+        .reduce((sum, k) => sum + (Number(quotas[k]) || 0), 0);
+      const effectiveShow = body.questionsToShow !== undefined
+        ? body.questionsToShow
+        : (existing ? existing.questions_to_show : null);
+      if (effectiveShow != null && Number(effectiveShow) !== quotaTotal) {
+        const label = r.byCategory ? 'category' : 'difficulty';
+        return [`The ${label} distribution adds up to ${quotaTotal}, but the test is set to show ${effectiveShow} questions.`];
+      }
+    }
   }
   const errors = [];
   const val = (key) => (body[key] !== undefined ? body[key] : (existing ? existing[key] : undefined));
@@ -216,6 +306,16 @@ router.post('/', requireRole(...EDITORS), (req, res) => {
     assessment_type: b.assessmentType ? String(b.assessmentType).toUpperCase() : 'GENERAL_ASSESSMENT',
     iq_scoring_json: b.iqScoring ? JSON.stringify(b.iqScoring) : null,
   };
+  // An IQ test draws a fresh paper per candidate unless told otherwise; a
+  // recruitment assessment keeps serving its fixed set unless told otherwise.
+  const isIq = payload.assessment_type === 'IQ_TEST';
+  payload.randomize_questions = b.randomizeQuestions !== undefined
+    ? (b.randomizeQuestions ? 1 : 0) : (isIq ? 1 : 0);
+  payload.questions_to_show = b.questionsToShow != null ? Number(b.questionsToShow) : null;
+  payload.randomize_question_order = b.randomizeQuestionOrder !== undefined
+    ? (b.randomizeQuestionOrder ? 1 : 0) : (isIq ? 1 : 0);
+  payload.randomize_options = b.randomizeOptions ? 1 : 0;
+  payload.selection_rules_json = b.selectionRules ? JSON.stringify(b.selectionRules) : null;
   const errors = validate({ ...b, ...payload }, {});
   if (errors.length) return res.status(400).json({ error: errors[0], errors });
 
@@ -225,10 +325,12 @@ router.post('/', requireRole(...EDITORS), (req, res) => {
     db.prepare(
       `INSERT INTO assessments (id, name, description, active, archived, duration_minutes, link_expiry_minutes,
          calc_max, written_max, interview_max, total_max, pass_threshold, eligibility_rules_id,
-         assessment_type, iq_scoring_json, created_by)
+         assessment_type, iq_scoring_json, randomize_questions, questions_to_show,
+         randomize_question_order, randomize_options, selection_rules_json, created_by)
        VALUES (@id,@name,@description,@active,0,@duration_minutes,@link_expiry_minutes,
          @calc_max,@written_max,@interview_max,@total_max,@pass_threshold,@eligibility_rules_id,
-         @assessment_type,@iq_scoring_json,@createdBy)`
+         @assessment_type,@iq_scoring_json,@randomize_questions,@questions_to_show,
+         @randomize_question_order,@randomize_options,@selection_rules_json,@createdBy)`
     ).run({ id, ...payload, active: b.active === false ? 0 : 1, createdBy: req.user.name });
     setQuestions(id, questionIds);
   })();
@@ -268,6 +370,16 @@ router.patch('/:id', requireRole(...EDITORS), (req, res) => {
     iq_scoring_json: b.iqScoring !== undefined
       ? (b.iqScoring ? JSON.stringify(b.iqScoring) : null)
       : a.iq_scoring_json,
+    randomize_questions: b.randomizeQuestions !== undefined
+      ? (b.randomizeQuestions ? 1 : 0) : a.randomize_questions,
+    questions_to_show: b.questionsToShow !== undefined
+      ? (b.questionsToShow != null ? Number(b.questionsToShow) : null) : a.questions_to_show,
+    randomize_question_order: b.randomizeQuestionOrder !== undefined
+      ? (b.randomizeQuestionOrder ? 1 : 0) : a.randomize_question_order,
+    randomize_options: b.randomizeOptions !== undefined
+      ? (b.randomizeOptions ? 1 : 0) : a.randomize_options,
+    selection_rules_json: b.selectionRules !== undefined
+      ? (b.selectionRules ? JSON.stringify(b.selectionRules) : null) : a.selection_rules_json,
   };
 
   const beforeQuestions = questionsFor(a.id).map((q) => q.id);
@@ -277,7 +389,9 @@ router.patch('/:id', requireRole(...EDITORS), (req, res) => {
          duration_minutes=@duration_minutes, link_expiry_minutes=@link_expiry_minutes,
          calc_max=@calc_max, written_max=@written_max, interview_max=@interview_max,
          total_max=@total_max, pass_threshold=@pass_threshold, eligibility_rules_id=@eligibility_rules_id,
-         iq_scoring_json=@iq_scoring_json,
+         iq_scoring_json=@iq_scoring_json, randomize_questions=@randomize_questions,
+         questions_to_show=@questions_to_show, randomize_question_order=@randomize_question_order,
+         randomize_options=@randomize_options, selection_rules_json=@selection_rules_json,
          updated_at=datetime('now') WHERE id=@id`
     ).run({ id: a.id, ...next });
     if (b.questionIds !== undefined) setQuestions(a.id, b.questionIds);

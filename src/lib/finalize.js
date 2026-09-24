@@ -79,7 +79,11 @@ function meaningfulAnswerCount(sessionId) {
     );
     if (hasValue) answered += 1;
   });
-  const total = db.prepare("SELECT COUNT(*) AS n FROM questions WHERE active = 1 AND question_family = 'GENERAL'").get().n;
+  // Out of what this attempt was actually asked. With random selection that is
+  // the stored set; without it, the recruitment bank, exactly as before.
+  const assigned = require('./questionSelection').sessionSelection(sessionId).length;
+  const total = assigned
+    || db.prepare("SELECT COUNT(*) AS n FROM questions WHERE active = 1 AND question_family = 'GENERAL'").get().n;
   return { total, answered, unanswered: Math.max(0, total - answered) };
 }
 
@@ -141,8 +145,22 @@ function finalizeSession(sessionId, options = {}) {
 
     // Grade from whatever the candidate had already saved to the server.
     // Nothing is invented; unanswered questions simply score zero.
-    const questions = db.prepare("SELECT * FROM questions WHERE active = 1 AND question_family = 'GENERAL'").all()
-      .map((q) => ({ ...q, config: JSON.parse(q.config_json) }));
+    //
+    // Which questions: the set THIS attempt was given, when it drew one. An IQ
+    // attempt is excluded on purpose — its drawn set is entirely IQ questions,
+    // and this block writes the recruitment /30 calculation score. An IQ
+    // attempt is marked by iqScoring into iq_results instead, so its
+    // recruitment score stays what it always was.
+    const isIqAssessment = !!db.prepare(
+      "SELECT 1 AS n FROM assessments WHERE id = ? AND assessment_type = 'IQ_TEST'"
+    ).get(session.assessment_id || '');
+    const assignedQuestions = isIqAssessment
+      ? []
+      : require('./questionSelection').sessionQuestions(sessionId);
+    const questions = (assignedQuestions.length
+      ? assignedQuestions
+      : db.prepare("SELECT * FROM questions WHERE active = 1 AND question_family = 'GENERAL'").all()
+    ).map((q) => ({ ...q, config: JSON.parse(q.config_json) }));
     const answers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(sessionId);
     const answersByQ = {};
     answers.forEach((a) => { answersByQ[a.question_id] = a; });

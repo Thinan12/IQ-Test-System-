@@ -139,7 +139,12 @@ router.get('/:id', (req, res) => {
     scores = db.prepare('SELECT * FROM scores WHERE session_id = ?').get(session.id);
     integrity = db.prepare('SELECT * FROM integrity_assessments WHERE session_id = ?').get(session.id);
     const rawAnswers = db.prepare('SELECT * FROM candidate_answers WHERE session_id = ?').all(session.id);
-    const questions = db.prepare("SELECT * FROM questions WHERE active = 1 AND question_family = 'GENERAL' ORDER BY order_index").all();
+    // The questions this attempt was actually given. Without random selection
+    // there is no stored set and this is the recruitment bank, as before.
+    const drawn = require('../../lib/questionSelection').sessionQuestions(session.id);
+    const questions = drawn.length
+      ? drawn
+      : db.prepare("SELECT * FROM questions WHERE active = 1 AND question_family = 'GENERAL' ORDER BY order_index").all();
     answers = questions.map((q) => {
       const a = rawAnswers.find((x) => x.question_id === q.id);
       const config = JSON.parse(q.config_json);
@@ -307,6 +312,13 @@ router.post('/:id/links', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (
   if (requested && !assessment) return res.status(404).json({ error: 'That assessment does not exist.' });
   if (assessment && assessment.archived) return res.status(409).json({ error: 'That assessment is archived and cannot receive new invitations.' });
   if (assessment && !assessment.active) return res.status(409).json({ error: 'That assessment is inactive and cannot receive new invitations.' });
+  // A misconfigured question set is caught here, before a candidate is sent
+  // anything, rather than when they try to sit it and find the paper cannot be
+  // built. The administrator is told exactly which bucket is short.
+  const selectionProblems = require('../../lib/questionSelection').validateSelection(assessment);
+  if (selectionProblems.length) {
+    return res.status(409).json({ error: selectionProblems[0], errors: selectionProblems });
+  }
 
   // Revoke any currently active links for this candidate; history is preserved, never deleted.
   db.prepare(`UPDATE assessment_links SET status = 'REVOKED', revoked_at = datetime('now') WHERE candidate_id = ? AND status = 'ACTIVE'`).run(c.id);

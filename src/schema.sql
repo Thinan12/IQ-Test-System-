@@ -199,6 +199,24 @@ CREATE TABLE IF NOT EXISTS assessments (
   -- How an IQ test is scored, as configuration rather than code. NULL for a
   -- general assessment. See lib/iqScoring.js for the shape and the defaults.
   iq_scoring_json TEXT,
+  -- Random question selection. OFF by default, so an assessment that existed
+  -- before this feature serves its attached question set in its configured
+  -- order, exactly as it always did. When ON, each attempt gets its own set
+  -- drawn from the attached pool, materialised into session_questions at
+  -- start. See lib/questionSelection.js.
+  randomize_questions INTEGER NOT NULL DEFAULT 0,
+  -- How many questions an attempt shows. NULL means "the whole eligible pool",
+  -- which is what every assessment did before this column existed.
+  questions_to_show INTEGER,
+  randomize_question_order INTEGER NOT NULL DEFAULT 0,
+  -- Per-candidate option order. OFF by default: it is only safe where the
+  -- answer is stored by canonical option value and the options carry no
+  -- meaning in their order (an IQ single-choice question).
+  randomize_options INTEGER NOT NULL DEFAULT 0,
+  -- Optional per-category / per-difficulty quotas, e.g.
+  -- {"byCategory":{"NUMERICAL":4,...}} or {"byDifficulty":{"EASY":5,...}}.
+  -- NULL means "draw from the whole eligible pool at random".
+  selection_rules_json TEXT,
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -408,6 +426,24 @@ CREATE TABLE IF NOT EXISTS integrity_reviews (
 -- for a recruitment score in an export.
 --
 -- One row per session, so re-finalizing is idempotent.
+-- The questions ONE attempt was given, and the order it was given them in.
+-- This is the authority on what a sitting may see and answer: once these rows
+-- exist they are never rewritten, so a reload, a language switch, reopening
+-- the link or navigating cannot draw a new set. A session with no rows here
+-- predates random selection (or belongs to an assessment with it switched
+-- off) and falls back to the assessment's attached question set, unchanged.
+CREATE TABLE IF NOT EXISTS session_questions (
+  session_id TEXT NOT NULL REFERENCES assessment_sessions(id) ON DELETE CASCADE,
+  question_id TEXT NOT NULL REFERENCES questions(id),
+  display_order INTEGER NOT NULL DEFAULT 0,
+  -- Canonical option values in this candidate's display order, e.g.
+  -- ["C","A","D","B"]. NULL when options are not randomised. The answer is
+  -- still stored and marked by canonical value, so order never affects a mark.
+  option_order_json TEXT,
+  PRIMARY KEY (session_id, question_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_questions ON session_questions(session_id, display_order);
+
 CREATE TABLE IF NOT EXISTS iq_results (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL UNIQUE REFERENCES assessment_sessions(id) ON DELETE CASCADE,

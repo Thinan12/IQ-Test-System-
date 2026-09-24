@@ -1306,6 +1306,77 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(/Question by question/.test(iqDetail), 'and a per-question review for the admin');
     check(/not a clinically validated IQ/i.test(iqDetail), 'and repeats the disclaimer');
 
+    // ------------------- Random question selection, in a real browser
+    // Several candidates sit the same IQ test. Each one must be given its own
+    // paper, and that paper must survive everything the candidate can do to it.
+    head('Random question selection — each candidate draws their own fixed paper');
+    const randCfg = await page.evaluate(async (testId) => {
+      const before = await api('/assessments/' + testId);
+      const pool = before.assessment.questions.filter((q) => !q.archived).length;
+      await api('/assessments/' + testId, { method: 'PATCH', body: JSON.stringify({
+        randomizeQuestions: true, questionsToShow: 5, randomizeQuestionOrder: true }) });
+      const after = await api('/assessments/' + testId);
+      return { pool, shown: after.assessment.attemptQuestionCount, problems: after.assessment.selectionProblems.length };
+    }, iqCand.testId);
+    check(randCfg.pool > 5, 'the IQ bank holds more questions than one sitting shows', 'pool=' + randCfg.pool);
+    check(randCfg.shown === 5, 'the test is set to show 5 of them', String(randCfg.shown));
+    check(randCfg.problems === 0, 'and that configuration can actually be satisfied');
+
+    for (const who of ['Random Browser One', 'Random Browser Two', 'Random Browser Three']) {
+      const rc = await page.evaluate(async ({ testId, name }) => {
+        const cand = await api('/candidates', { method: 'POST', body: JSON.stringify({
+          fullName: name, applicationType: 'NORMAL', iq: 110, education: 'Bachelor Degree' }) });
+        const l = await api('/candidates/' + cand.id + '/links', { method: 'POST', body: JSON.stringify({
+          assessmentId: testId, language: 'en' }) });
+        return { id: cand.id, code: cand.code, token: l.token };
+      }, { testId: iqCand.testId, name: who });
+
+      const rctx = await browser.newContext();
+      const rp = await rctx.newPage();
+      await rp.goto(`${BASE}/iq/${rc.token}`, { waitUntil: 'networkidle' });
+      await rp.waitForSelector('#startBtn', { timeout: 20000 });
+      await rp.fill('#vCode', rc.code);
+      await rp.check('#ack');
+      await rp.click('#startBtn');
+      await rp.waitForSelector('#nextBtn', { timeout: 20000 });
+
+      const servedIds = () => rp.evaluate(async (t) => {
+        const r = await fetch('/api/exam/' + t + '/questions');
+        const j = await r.json();
+        return j.questions.map((q) => q.id).join(',');
+      }, rc.token);
+
+      const firstDraw = await servedIds();
+      check(firstDraw.split(',').length === 5, `${who} was given exactly 5 questions`,
+        String(firstDraw.split(',').length));
+      await rp.reload({ waitUntil: 'networkidle' });
+      await rp.waitForTimeout(1200);
+      check((await servedIds()) === firstDraw, 'and refreshing the browser does not redraw them');
+      await rp.click('#langSwitch [data-lang="lo"]');
+      await rp.waitForTimeout(1500);
+      check((await servedIds()) === firstDraw, 'nor does switching to Lao');
+      await rp.click('#langSwitch [data-lang="en"]');
+      await rp.waitForTimeout(1500);
+      check((await servedIds()) === firstDraw, 'nor switching back to English');
+      await rctx.close();
+
+      const rsess = db.prepare('SELECT id FROM assessment_sessions WHERE candidate_id = ?').get(rc.id);
+      const rstored = db.prepare('SELECT COUNT(*) AS n FROM session_questions WHERE session_id = ?').get(rsess.id).n;
+      const rdupes = db.prepare('SELECT COUNT(*) - COUNT(DISTINCT question_id) AS n FROM session_questions WHERE session_id = ?').get(rsess.id).n;
+      const rforeign = db.prepare(
+        `SELECT COUNT(*) AS n FROM session_questions sq JOIN questions q ON q.id = sq.question_id
+          WHERE sq.session_id = ? AND q.question_family <> 'IQ'`).get(rsess.id).n;
+      check(rstored === 5, 'the server stored that paper against the attempt', String(rstored));
+      check(rdupes === 0, 'with no question drawn twice');
+      check(rforeign === 0, 'and nothing from another question bank');
+    }
+
+    // Leave the IQ test as this suite found it, so later checks are unaffected.
+    await page.evaluate(async (testId) => {
+      await api('/assessments/' + testId, { method: 'PATCH', body: JSON.stringify({
+        randomizeQuestions: true, questionsToShow: null }) });
+    }, iqCand.testId);
+
     // ------------------------ Lao end to end: sit, submit and print in Lao
     // The production smoke test could not prove this: that candidate switched
     // back to English before submitting, so the Lao branch of the receipt and

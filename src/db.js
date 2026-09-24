@@ -63,6 +63,29 @@ ensureColumn('questions', 'iq_category', 'TEXT');
 ensureColumn('assessments', 'assessment_type', "TEXT NOT NULL DEFAULT 'GENERAL_ASSESSMENT'");
 ensureColumn('assessments', 'iq_scoring_json', 'TEXT');
 
+// Random question selection. Every default describes what an assessment
+// already did: selection off, no cap on the number shown, no reordering and no
+// option shuffling. An existing assessment therefore keeps serving its attached
+// set in its configured order until somebody deliberately turns this on.
+ensureColumn('assessments', 'randomize_questions', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('assessments', 'questions_to_show', 'INTEGER');
+ensureColumn('assessments', 'randomize_question_order', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('assessments', 'randomize_options', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('assessments', 'selection_rules_json', 'TEXT');
+
+// The per-attempt question set. Created here as well as in schema.sql so an
+// existing database gains it on the next boot without a migration step.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS session_questions (
+    session_id TEXT NOT NULL REFERENCES assessment_sessions(id) ON DELETE CASCADE,
+    question_id TEXT NOT NULL REFERENCES questions(id),
+    display_order INTEGER NOT NULL DEFAULT 0,
+    option_order_json TEXT,
+    PRIMARY KEY (session_id, question_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_session_questions ON session_questions(session_id, display_order);
+`);
+
 // Candidate display language for a session. Presentation only.
 ensureColumn('assessment_sessions', 'language', "TEXT NOT NULL DEFAULT 'en'");
 
