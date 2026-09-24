@@ -104,6 +104,24 @@ const flagLimiter = rateLimit({
   message: { error: 'You are flagging questions too quickly. Please wait a moment.' },
 });
 
+// Machine translation calls an external provider that costs money per request,
+// so it is capped per ADMIN USER rather than per address: several admins behind
+// one office NAT must not share one budget, and one admin holding the button
+// down must not spend everyone's. Translation is an explicit, occasional
+// action, so the ceiling is deliberately low.
+const TRANSLATE_RATE_LIMIT = Math.max(5, Number(process.env.TRANSLATE_RATE_LIMIT_PER_HOUR) || 60);
+const translateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: TRANSLATE_RATE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => 'translate:' + ((req.user && req.user.id) || req.ip),
+  // The key is a user id, not an address, so express-rate-limit's IPv6
+  // normalisation check does not apply to it.
+  validate: { keyGeneratorIpFallback: false },
+  message: { error: 'Too many translation requests. Please wait before trying again.' },
+});
+
 const LOGIN_RATE_LIMIT = Math.max(5, Number(process.env.LOGIN_RATE_LIMIT_PER_15_MIN) || 20);
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -113,4 +131,4 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many login attempts. Please try again later.' },
 });
 
-module.exports = { signToken, verifyToken, requireAuth, requireRole, examLimiter, flagLimiter, loginLimiter, JWT_SECRET };
+module.exports = { signToken, verifyToken, requireAuth, requireRole, examLimiter, flagLimiter, loginLimiter, translateLimiter, JWT_SECRET };

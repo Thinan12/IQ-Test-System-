@@ -358,6 +358,18 @@ function tabEligibility(d, el) {
 // One place that names a language, so every admin screen says the same thing.
 function langLabel(code) { return code === 'lo' ? 'ລາວ (Lao)' : 'English'; }
 
+// Whether the server has a translation provider configured. Set from the
+// question bank response; the browser never learns anything else about it.
+let TRANSLATION_CONFIGURED = false;
+
+// Provenance badge. Machine output is labelled as such wherever it is shown, so
+// nobody can mistake it for a reviewed translation.
+function sourceBadge(src) {
+  if (src === 'MACHINE') return '<span class="badge badge-warning">MACHINE</span>';
+  if (src === 'HUMAN') return '<span class="badge badge-neutral">HUMAN</span>';
+  return '';
+}
+
 // What a Lao candidate would still read in English on this question. The server
 // computes it; this only phrases it. A gap is not an error — the English
 // fallback is deliberate — so it is shown as information, and only escalated
@@ -970,7 +982,9 @@ async function viewQuestions(_, el) {
 
     if (tab === 'interview') return showInterview();
 
-    const { questions } = await api('/questions' + (showArchived ? '?archived=1' : ''));
+    const bank = await api('/questions' + (showArchived ? '?archived=1' : ''));
+    const questions = bank.questions;
+    TRANSLATION_CONFIGURED = !!bank.translationConfigured;
     const list = questions.filter((q) => q.type === tab.toUpperCase());
 
     $('#qBody').innerHTML = `
@@ -1018,7 +1032,7 @@ function questionCardHTML(q) {
       <span>${esc(q.category || q.type)} <span class="faint">${q.max_marks} marks</span>
         ${q.archived ? '<span class="badge badge-neutral">ARCHIVED</span>' : ''}
         ${q.active ? '' : '<span class="badge badge-warning">INACTIVE</span>'}</span>
-      <span>Lao: ${translationBadge(q.translationStatus)}${q.laoComplete ? ' <span class="badge badge-success">COMPLETE</span>' : ''}</span>
+      <span>Lao: ${translationBadge(q.translationStatus)}${q.laoComplete ? ' <span class="badge badge-success">COMPLETE</span>' : ''} ${sourceBadge(q.translationSource)}</span>
     </div>
     ${laoGapNote(q)}
     <div class="faint" style="font-size:12px;margin:-4px 0 8px;">${
@@ -1042,6 +1056,9 @@ function questionCardHTML(q) {
     <p class="faint" style="margin-top:6px;">Answer key and marking rules are only ever shown here, inside the authenticated admin app — never in the candidate exam.</p>
     ${canEditQuestions() ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
       <button class="btn btn-sm" data-qact="edit" data-qid="${q.id}">Edit</button>
+      ${!q.archived && TRANSLATION_CONFIGURED && !String(q.text_lo || '').trim()
+        ? `<button class="btn btn-sm" data-qact="translate" data-qid="${q.id}">Auto-translate missing Lao</button>`
+        : ''}
       ${q.archived
         ? `<button class="btn btn-sm" data-qact="restore" data-qid="${q.id}" data-busy="Restoring…">Restore</button>`
         : `<button class="btn btn-sm" data-qact="archive" data-qid="${q.id}" data-busy="Archiving…">Archive</button>`}
@@ -1055,6 +1072,9 @@ function wireQuestionActions(questions, reload) {
       const q = questions.find((x) => x.id === btn.dataset.qid);
       const act = btn.dataset.qact;
       if (act === 'edit') return openQuestionModal(q, q.type, reload);
+      // Opens the editor and runs the translation into it. Nothing is saved
+      // until the admin has read it and pressed Save.
+      if (act === 'translate') return openQuestionModal(q, q.type, reload, { autoTranslateTo: 'lo' });
       if (act === 'archive') {
         if (!confirm('Archive this question? It is withdrawn from new assessments. Completed assessments keep it, and you can restore it at any time.')) return;
         const r = await api('/questions/' + q.id + '/archive', { method: 'POST' });
@@ -1156,7 +1176,32 @@ function collectBilingual(bg, config) {
 
 // Create / edit. English is required; Lao is optional and can only be marked
 // APPROVED deliberately — nothing is auto-translated anywhere in this app.
-function openQuestionModal(question, type, onDone) {
+// Builds the request the translation endpoint expects: the candidate-visible
+// wording only. No answer key, expected value, tolerance, rubric or explanation
+// is included, because none of it is candidate-visible and none of it is the
+// translator's business.
+function translationPayloadFrom(bg, config, from) {
+  const parts = config && Array.isArray(config.parts) ? config.parts : [];
+  const options = [];
+  parts.forEach((p) => {
+    if (p.type !== 'choice' || !Array.isArray(p.options)) return;
+    p.options.forEach((value) => {
+      const sel = from === 'en' ? '.qOptEn' : '.qOptLo';
+      const input = $(`${sel}[data-part="${cssEscape(p.key)}"][data-value="${cssEscape(value)}"]`, bg);
+      const label = input ? input.value.trim() : '';
+      options.push({ part: p.key, value, label: label || value });
+    });
+  });
+  return options;
+}
+
+// Attribute selectors need their values escaped; option values are admin-chosen
+// text, not identifiers.
+function cssEscape(v) {
+  return String(v).replace(/["\\]/g, '\\$&');
+}
+
+function openQuestionModal(question, type, onDone, opts) {
   const editing = !!question;
   const cfg = editing ? question.config : (type === 'CALC'
     ? { parts: [{ key: 'answer', label: '', marks: 5, expected: 0, tol: 0.01 }] }
@@ -1169,10 +1214,19 @@ function openQuestionModal(question, type, onDone) {
     <div class="section-title">${editing ? 'Edit question' : 'New ' + (type === 'CALC' ? 'calculation' : 'essay') + ' question'}</div>
 
     <div class="grid grid-2" style="gap:12px;">
-      <div class="field"><label class="field-label">English question *</label>
+      <div class="field"><label class="field-label"><span class="biltag en">EN</span> English question *</label>
         <textarea id="qText" style="min-height:96px;">${editing ? esc(question.text) : ''}</textarea></div>
-      <div class="field"><label class="field-label">Lao question (ຄຳຖາມພາສາລາວ)</label>
+      <div class="field"><label class="field-label"><span class="biltag lo">LO</span> Lao question (ຄຳຖາມພາສາລາວ)</label>
         <textarea id="qTextLo" style="min-height:96px;" placeholder="Leave blank until an approved translation exists">${editing && question.text_lo ? esc(question.text_lo) : ''}</textarea></div>
+    </div>
+
+    <div class="field" id="qTranslateRow">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button type="button" class="btn btn-sm" id="qTranslateLo">Auto-translate to Lao</button>
+        <button type="button" class="btn btn-sm" id="qTranslateEn">Auto-translate to English</button>
+        <span class="faint" id="qTranslateMsg"></span>
+      </div>
+      <span class="faint">Machine translation. It fills the fields on the other side so you can read and correct them — nothing is saved until you press Save, and a machine translation is never shown to a candidate until someone sets the status to APPROVED.</span>
     </div>
 
     <div class="grid grid-3" style="gap:12px;">
@@ -1249,6 +1303,117 @@ function openQuestionModal(question, type, onDone) {
     });
   }
 
+  // ---------------------------------------------------------- translation
+  // `source` records WHO produced the Lao currently in the form. It starts as
+  // whatever is stored, becomes MACHINE when the translator fills it in, and
+  // reverts to HUMAN the moment a person edits any translated field — because
+  // at that point it is no longer machine output.
+  let translationSource = (editing && question.translationSource) || null;
+  let translating = false;
+
+  function markHumanEdit() {
+    if (translationSource === 'MACHINE') translationSource = 'HUMAN';
+  }
+  ['#qTextLo', '#qText'].forEach((sel) => {
+    const node = $(sel, bg);
+    if (node) node.addEventListener('input', markHumanEdit);
+  });
+  if (panel) panel.addEventListener('input', markHumanEdit);
+
+  function refreshTranslateButtons() {
+    const toLo = $('#qTranslateLo', bg);
+    const toEn = $('#qTranslateEn', bg);
+    if (!toLo || !toEn) return;
+    const hasEn = !!$('#qText', bg).value.trim();
+    const hasLo = !!$('#qTextLo', bg).value.trim();
+
+    // Both sides filled -> nothing is overwritten by accident. The action is
+    // still available, but it is renamed so the admin knows it replaces.
+    toLo.textContent = translating ? 'Translating…' : (hasLo ? 'Regenerate Lao' : 'Auto-translate to Lao');
+    toEn.textContent = translating ? 'Translating…' : (hasEn ? 'Regenerate English' : 'Auto-translate to English');
+    toLo.disabled = translating || !TRANSLATION_CONFIGURED || !hasEn;
+    toEn.disabled = translating || !TRANSLATION_CONFIGURED || !hasLo;
+
+    const msg = $('#qTranslateMsg', bg);
+    if (msg && !translating) {
+      msg.textContent = TRANSLATION_CONFIGURED
+        ? ''
+        : 'Automatic translation is not configured on this server.';
+    }
+  }
+
+  async function runTranslation(target) {
+    if (translating) return;                       // no duplicate clicks
+    const from = target === 'lo' ? 'en' : 'lo';
+    const sourceText = (from === 'en' ? $('#qText', bg) : $('#qTextLo', bg)).value.trim();
+    if (!sourceText) return toast('There is no ' + (from === 'en' ? 'English' : 'Lao') + ' text to translate.', true);
+
+    const targetText = (target === 'lo' ? $('#qTextLo', bg) : $('#qText', bg)).value.trim();
+    if (targetText && !confirm('Replace the existing ' + (target === 'lo' ? 'Lao' : 'English') + ' wording with a new machine translation?')) return;
+
+    let config = null;
+    try { config = JSON.parse($('#qConfig', bg).value); }
+    catch (e) { return toast('Fix the marking configuration before translating.', true); }
+
+    const optionRows = panel ? translationPayloadFrom(bg, config, from) : [];
+    translating = true;
+    refreshTranslateButtons();
+    const msg = $('#qTranslateMsg', bg);
+    if (msg) msg.textContent = 'Translating…';
+
+    try {
+      const r = await api('/questions/translate', {
+        method: 'POST',
+        body: JSON.stringify({
+          questionId: editing ? question.id : null,
+          sourceLanguage: from,
+          targetLanguage: target,
+          question: sourceText,
+          options: optionRows.map((o) => ({ value: o.value, label: o.label })),
+        }),
+      });
+
+      // Populate. Existing values on the SOURCE side are never touched.
+      (target === 'lo' ? $('#qTextLo', bg) : $('#qText', bg)).value = r.question;
+      const byValue = {};
+      (r.options || []).forEach((o) => { byValue[o.value] = o.label; });
+      optionRows.forEach((row) => {
+        const label = byValue[row.value];
+        if (label === undefined) return;
+        const sel = target === 'lo' ? '.qOptLo' : '.qOptEn';
+        const input = $(`${sel}[data-part="${cssEscape(row.part)}"][data-value="${cssEscape(row.value)}"]`, bg);
+        if (input) input.value = label;
+      });
+
+      // Machine output is a DRAFT. It is never promoted to APPROVED here: a
+      // person has to read it and choose that themselves.
+      translationSource = 'MACHINE';
+      const statusSel = $('#qStatus', bg);
+      if (statusSel && statusSel.value === 'MISSING') statusSel.value = 'DRAFT';
+      if (msg) msg.textContent = 'Machine translation inserted — review it before saving.';
+      toast('Translated. Review the wording, then Save.');
+    } catch (e) {
+      // Controlled message only; the server never sends provider internals.
+      const detail = (e.data && e.data.error) || 'Translation failed. Please try again.';
+      if (msg) msg.textContent = '';
+      toast(detail, true);
+    } finally {
+      translating = false;
+      refreshTranslateButtons();
+    }
+  }
+
+  if ($('#qTranslateLo', bg)) {
+    $('#qTranslateLo', bg).onclick = () => runTranslation('lo');
+    $('#qTranslateEn', bg).onclick = () => runTranslation('en');
+    ['#qText', '#qTextLo'].forEach((sel) => {
+      const node = $(sel, bg);
+      if (node) node.addEventListener('input', refreshTranslateButtons);
+    });
+    refreshTranslateButtons();
+    if (opts && opts.autoTranslateTo) runTranslation(opts.autoTranslateTo);
+  }
+
   $('#qSave', bg).onclick = async () => {
     const text = $('#qText', bg).value.trim();
     if (!text) return toast('The English question text is required.', true);
@@ -1272,6 +1437,9 @@ function openQuestionModal(question, type, onDone) {
       explanation: $('#qExplanation', bg).value.trim() || null,
       active: $('#qActive', bg).value === '1',
       config,
+      // Who produced the Lao now in the form. Recorded separately from the
+      // approval status so machine output is never passed off as reviewed.
+      translationSource,
     };
     // Only a CALC question has candidate-facing config strings. Omitting the
     // key for an essay leaves whatever is stored untouched rather than wiping it.

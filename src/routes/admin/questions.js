@@ -2,7 +2,8 @@ const express = require('express');
 const db = require('../../db');
 const { generateId } = require('../../lib/tokens');
 const { auditFromReq } = require('../../lib/audit');
-const { requireAuth, requireRole } = require('../../middleware/auth');
+const { requireAuth, requireRole, translateLimiter } = require('../../middleware/auth');
+const { isTranslationConfigured, translateQuestion, TranslationError, LIMITS } = require('../../lib/translation');
 const { validateLaoOverlay, resolveTranslationStatus, STATUSES, laoGaps, laoIsComplete } = require('../../lib/questionText');
 
 const router = express.Router();
@@ -14,6 +15,7 @@ router.use(requireAuth);
 // the answers.
 const QUESTION_READERS = ['SUPER_ADMIN', 'HR_ADMIN', 'EVALUATOR', 'MANAGER'];
 const QUESTION_EDITORS = ['SUPER_ADMIN', 'HR_ADMIN'];
+const TRANSLATION_SOURCES = ['HUMAN', 'MACHINE'];
 
 // ---------------------------------------------------------------- validation
 function validateQuestionPayload(body, { partial = false, existing = null } = {}) {
@@ -33,6 +35,12 @@ function validateQuestionPayload(body, { partial = false, existing = null } = {}
   }
   if (body.translationStatus !== undefined && !STATUSES.includes(String(body.translationStatus).toUpperCase())) {
     errors.push('translationStatus must be one of: ' + STATUSES.join(', '));
+  }
+  // Provenance is recorded separately from approval, so machine output can
+  // never be passed off as a reviewed translation.
+  if (body.translationSource !== undefined && body.translationSource !== null
+      && !TRANSLATION_SOURCES.includes(String(body.translationSource).toUpperCase())) {
+    errors.push('translationSource must be one of: ' + TRANSLATION_SOURCES.join(', '));
   }
 
   const config = body.config !== undefined
@@ -140,6 +148,9 @@ function adminQuestion(q) {
     // here so an admin can see the gaps before approving, not afterwards.
     laoGaps: laoGaps(q),
     laoComplete: laoIsComplete(q),
+    // 'MACHINE' until a person rewrites it. Shown in the bank so nobody
+    // mistakes automatic output for a reviewed translation.
+    translationSource: q.translation_source || null,
     // Which assessments actually ask this question. A question nobody has
     // added to an assessment is never served to a candidate, so this is the
     // difference between written and in use.
@@ -157,7 +168,74 @@ router.get('/', requireRole(...QUESTION_READERS), (req, res) => {
   const rows = showArchived
     ? db.prepare('SELECT * FROM questions WHERE COALESCE(archived,0) = 1 ORDER BY type, order_index').all()
     : db.prepare('SELECT * FROM questions WHERE COALESCE(archived,0) = 0 ORDER BY type, order_index').all();
-  res.json({ questions: rows.map(adminQuestion), translationStatuses: STATUSES });
+  // The admin UI needs to know whether the Auto-translate action can work.
+  // It is told a BOOLEAN and nothing else — never the key, the provider or
+  // any part of the configuration.
+  res.json({ questions: rows.map(adminQuestion), translationStatuses: STATUSES, translationConfigured: isTranslationConfigured() });
+});
+
+
+// -------------------------------------------------------------- translation
+// Machine translation of candidate-visible wording. ADMIN ONLY: a candidate can
+// never reach this router at all (it is mounted behind requireAuth), and within
+// it only the roles that may already edit questions can translate.
+//
+// Nothing is saved here. The translation is handed back to the editor, the
+// admin reviews and edits it, and the ordinary save path stores it. That is
+// what keeps machine output out of the candidate portal until a human approves.
+
+// One in-flight translation per user. A double-click, an impatient second click
+// or a stuck button cannot fan out into several paid provider calls.
+const translationsInFlight = new Set();
+
+router.post('/translate', requireRole(...QUESTION_EDITORS), translateLimiter, async (req, res) => {
+  const userKey = (req.user && req.user.id) || req.ip;
+  if (translationsInFlight.has(userKey)) {
+    return res.status(409).json({ error: 'A translation is already running. Please wait for it to finish.' });
+  }
+  // NOTE the order: the request is validated inside translateQuestion BEFORE
+  // the provider configuration is consulted. A malformed request is the
+  // admin's mistake and must be reported as 400 whether or not a provider
+  // happens to be configured — otherwise a misconfigured server hides real
+  // request bugs behind a 503.
+  translationsInFlight.add(userKey);
+  try {
+    const result = await translateQuestion(req.body || {});
+    auditFromReq(req, 'Question translated', (req.body || {}).questionId || null, null, {
+      sourceLanguage: (req.body || {}).sourceLanguage,
+      targetLanguage: (req.body || {}).targetLanguage,
+      options: result.options.length,
+      machine: true,
+    });
+    // MACHINE output. The caller is told so explicitly, so nothing downstream
+    // can mistake it for a reviewed translation.
+    res.json({ ...result, machineTranslated: true, translationStatus: 'DRAFT' });
+  } catch (e) {
+    if (e instanceof TranslationError) {
+      const status = {
+        BAD_REQUEST: 400,
+        NOT_CONFIGURED: 503,
+        PROVIDER_TIMEOUT: 504,
+        PROVIDER_UNAVAILABLE: 502,
+        BAD_PROVIDER_RESPONSE: 502,
+      }[e.code] || 500;
+      if (status >= 500) console.warn('[translation] ' + e.code);
+      const body = { error: e.message, code: e.code };
+      // A configuration problem is reported as such, so the admin UI can say
+      // "not configured" rather than "try again".
+      if (e.code === 'NOT_CONFIGURED') body.configured = false;
+      return res.status(status).json(body);
+    }
+    // Never surface a raw provider or runtime error to the browser.
+    console.error('[translation] unexpected failure:', e && e.message);
+    res.status(500).json({ error: 'Translation failed. Please try again.' });
+  } finally {
+    translationsInFlight.delete(userKey);
+  }
+});
+
+router.get('/translate/limits', requireRole(...QUESTION_READERS), (req, res) => {
+  res.json({ configured: isTranslationConfigured(), limits: LIMITS });
 });
 
 router.get('/:id', requireRole(...QUESTION_READERS), (req, res) => {
@@ -176,23 +254,32 @@ router.post('/', requireRole(...QUESTION_EDITORS), (req, res) => {
   const status = resolveTranslationStatus(b.translationStatus, b.textLo);
   db.prepare(
     `INSERT INTO questions (id, type, order_index, category, difficulty, max_marks, text, config_json,
-       text_lo, config_lo_json, translation_status, translation_updated_by, translation_updated_at,
+       text_lo, config_lo_json, translation_status, translation_source,
+       translation_updated_by, translation_updated_at,
        explanation, active, created_by)
      VALUES (@id,@type,@order,@category,@difficulty,@maxMarks,@text,@config,
-       @textLo,@configLo,@status,@translatedBy,@translatedAt,@explanation,@active,@createdBy)`
+       @textLo,@configLo,@status,@source,@translatedBy,@translatedAt,@explanation,@active,@createdBy)`
   ).run({
     id, type: b.type, order: b.order || 0, category: b.category || null, difficulty: b.difficulty || null,
     maxMarks, text: String(b.text).trim(), config: JSON.stringify(b.config),
     textLo: b.textLo ? String(b.textLo).trim() : null,
     configLo: b.configLo ? JSON.stringify(b.configLo) : null,
     status,
+    // No Lao -> no provenance. Lao with no declared source was typed by the
+    // person saving it, so it is HUMAN unless they say it came from the machine.
+    source: status === 'MISSING'
+      ? null
+      : (b.translationSource ? String(b.translationSource).toUpperCase() : 'HUMAN'),
     translatedBy: status === 'MISSING' ? null : req.user.name,
     translatedAt: status === 'MISSING' ? null : new Date().toISOString(),
     explanation: b.explanation || null,
     active: b.active === false ? 0 : 1,
     createdBy: req.user.name,
   });
-  auditFromReq(req, 'Question created', id, null, { type: b.type, maxMarks, translationStatus: status });
+  auditFromReq(req, 'Question created', id, null, {
+    type: b.type, maxMarks, translationStatus: status,
+    translationSource: status === 'MISSING' ? null : (b.translationSource ? String(b.translationSource).toUpperCase() : 'HUMAN'),
+  });
   res.status(201).json({ id, maxMarks, translationStatus: status });
 });
 
@@ -227,11 +314,27 @@ router.patch('/:id', requireRole(...QUESTION_EDITORS), (req, res) => {
     status = 'DRAFT';
   }
 
-  const touchedTranslation = b.textLo !== undefined || b.configLo !== undefined || b.translationStatus !== undefined;
+  // Provenance. An explicit declaration wins. Otherwise: rewriting the Lao text
+  // by hand makes it HUMAN, because that is what just happened — machine output
+  // a person has edited is no longer machine output. Clearing the Lao clears it.
+  const laoTextChanged = b.textLo !== undefined && String(b.textLo || '').trim() !== String(q.text_lo || '').trim();
+  let source;
+  if (b.translationSource !== undefined) {
+    source = b.translationSource ? String(b.translationSource).toUpperCase() : null;
+  } else if (laoTextChanged) {
+    source = 'HUMAN';
+  } else {
+    source = q.translation_source || null;
+  }
+  if (!textLo) source = null;
+
+  const touchedTranslation = b.textLo !== undefined || b.configLo !== undefined
+    || b.translationStatus !== undefined || b.translationSource !== undefined;
   db.prepare(
     `UPDATE questions SET text=@text, category=@category, difficulty=@difficulty, explanation=@explanation,
      config_json=@config, max_marks=@maxMarks, active=@active,
      text_lo=@textLo, config_lo_json=@configLo, translation_status=@status,
+     translation_source=@source,
      translation_updated_by=@translatedBy, translation_updated_at=@translatedAt,
      updated_at=datetime('now') WHERE id=@id`
   ).run({
@@ -242,14 +345,14 @@ router.patch('/:id', requireRole(...QUESTION_EDITORS), (req, res) => {
     explanation: b.explanation ?? q.explanation,
     config, maxMarks,
     active: b.active != null ? (b.active ? 1 : 0) : q.active,
-    textLo, configLo, status,
+    textLo, configLo, status, source,
     translatedBy: touchedTranslation ? req.user.name : q.translation_updated_by,
     translatedAt: touchedTranslation ? new Date().toISOString() : q.translation_updated_at,
   });
   auditFromReq(req, 'Question updated', q.id,
-    { translationStatus: q.translation_status, maxMarks: q.max_marks },
-    { translationStatus: status, maxMarks, englishChanged });
-  res.json({ ok: true, maxMarks, translationStatus: status });
+    { translationStatus: q.translation_status, translationSource: q.translation_source, maxMarks: q.max_marks },
+    { translationStatus: status, translationSource: source, maxMarks, englishChanged });
+  res.json({ ok: true, maxMarks, translationStatus: status, translationSource: source });
 });
 
 // -------------------------------------------------- Archive / restore

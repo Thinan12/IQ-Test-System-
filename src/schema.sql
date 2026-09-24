@@ -119,6 +119,13 @@ CREATE TABLE IF NOT EXISTS questions (
   -- APPROVED -> a human has signed it off and it may be shown to candidates.
   translation_status TEXT NOT NULL DEFAULT 'MISSING'
     CHECK(translation_status IN ('MISSING','DRAFT','APPROVED')),
+  -- WHO produced the translation, kept separate from WHETHER it is approved.
+  -- 'MACHINE' means it came from the automatic translator and has not been
+  -- rewritten by a person; 'HUMAN' means someone typed or corrected it. This is
+  -- a separate column rather than a fourth translation_status so the existing
+  -- MISSING/DRAFT/APPROVED semantics are untouched and no live SQLite table has
+  -- to be rebuilt to widen a CHECK constraint.
+  translation_source TEXT CHECK(translation_source IN ('HUMAN','MACHINE')),
   translation_updated_by TEXT,
   translation_updated_at TEXT,
   archived INTEGER NOT NULL DEFAULT 0,

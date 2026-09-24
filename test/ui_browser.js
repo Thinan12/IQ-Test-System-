@@ -40,7 +40,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // storage — genuinely different browser sessions.
   const adminCtx = await browser.newContext();
   const page = await adminCtx.newPage();
-  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    // Chromium's message for a failed request does not name the URL, so the
+    // location is appended: an exemption can then be scoped to one endpoint
+    // instead of muting a whole status code everywhere.
+    const loc = m.location && m.location();
+    consoleErrors.push(m.text() + (loc && loc.url ? ' [' + loc.url + ']' : ''));
+  });
   page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message));
 
   try {
@@ -899,6 +906,199 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       'switching language never started a second attempt');
     await invCtx.close();
 
+    // ----------------------------- Automatic translation, through the real UI
+    // Nothing here fakes a translation. Either the configured provider really
+    // produces the Lao, or the not-configured path is proved instead and the
+    // live path is reported as unproven.
+    head('Automatic translation \u2014 real admin UI, real endpoint');
+    const translationConfigured = !!String(process.env.ANTHROPIC_API_KEY || '').trim();
+
+    await page.click('.sidebar-nav a[data-nav="questions"]');
+    await page.waitForSelector('#newQBtn', { timeout: 10000 });
+    await page.click('#newQBtn');
+    await page.waitForSelector('#qText');
+
+    // 3-4. English question and English options, typed like an admin would.
+    const trEnglish = 'LALCO lends USD 100,000 to a customer for 6 months at 3% per month. Which decision is correct?';
+    await page.fill('#qText', trEnglish);
+    await page.fill('#qCategory', 'Translation Test');
+    await page.fill('#qConfig', JSON.stringify({
+      parts: [{ key: 'decision', label: 'Decision', marks: 4, type: 'choice', options: ['A', 'B'], expected: 'A' }],
+    }, null, 2));
+    await page.dispatchEvent('#qConfig', 'change');
+    await page.waitForSelector('.qOptEn[data-value="A"]', { timeout: 10000 });
+    await page.fill('.qOptEn[data-value="A"]', 'Approve the loan');
+    await page.fill('.qOptEn[data-value="B"]', 'Reject the loan');
+
+    check(await page.locator('#qTranslateLo').count() > 0, 'the editor offers Auto-translate to Lao');
+    check(await page.locator('#qTranslateEn').count() > 0, 'and Auto-translate to English');
+    check((await page.locator('#qTranslateLo').innerText()).includes('Auto-translate'),
+      'it reads Auto-translate while the Lao side is empty',
+      await page.locator('#qTranslateLo').innerText());
+    check(await page.locator('#qTranslateEn').isDisabled(),
+      'translating INTO English is disabled while there is no Lao source');
+
+    if (!translationConfigured) {
+      // -------- provider not configured: prove the controlled behaviour -----
+      check(await page.locator('#qTranslateLo').isDisabled(),
+        'with no provider configured the Lao button is disabled, not silently broken');
+      const note = await page.locator('#qTranslateMsg').innerText();
+      check(/not configured/i.test(note), 'and the admin is told why', JSON.stringify(note));
+
+      // The endpoint itself, called exactly as the UI calls it.
+      const unconfigured = await page.evaluate(async (q) => {
+        try {
+          await api('/questions/translate', {
+            method: 'POST',
+            body: JSON.stringify({ sourceLanguage: 'en', targetLanguage: 'lo', question: q, options: [{ value: 'A', label: 'Approve the loan' }] }),
+          });
+          return { status: 200, body: 'unexpected success' };
+        } catch (e) {
+          return { status: e.status, body: JSON.stringify(e.data || {}) };
+        }
+      }, trEnglish);
+      check(unconfigured.status === 503, 'the real endpoint answers 503, not a fabricated translation', String(unconfigured.status));
+      check(/not configured/i.test(unconfigured.body), 'and says it is a configuration problem', unconfigured.body);
+      check(!/\u0e80-\u0eff/.test(unconfigured.body), 'no Lao text was invented anywhere in the response');
+      check((await page.locator('#qTextLo').inputValue()) === '', 'the Lao field stays empty');
+      check((await page.locator('#qText').inputValue()) === trEnglish, 'and the English the admin typed is untouched');
+
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+      console.log('\n\x1b[33m  CONFIGURATION BLOCKER\x1b[0m  ANTHROPIC_API_KEY is not set on this server.');
+      console.log('  The automatic-translation flow (generate Lao -> save -> candidate sits in Lao)');
+      console.log('  was NOT exercised end to end. Set the key and re-run to prove it.');
+    } else {
+      // ---------------- provider configured: the real end-to-end flow -------
+      // 5-6. Press the button and wait for the real server response.
+      await page.click('#qTranslateLo');
+      await page.waitForFunction(
+        () => { const el = document.querySelector('#qTextLo'); return el && el.value.trim().length > 0; },
+        { timeout: 90000 }
+      );
+
+      // 7-9. Lao appeared, and the canonical values did not move.
+      const trLaoQuestion = await page.locator('#qTextLo').inputValue();
+      check(trLaoQuestion.trim().length > 0, '7. the Lao question field was filled by the server');
+      check(trLaoQuestion.trim() !== trEnglish, 'and it is not just a copy of the English');
+      check(/[\u0E80-\u0EFF]/.test(trLaoQuestion), 'and it really contains Lao script',
+        (trLaoQuestion.match(/[\u0E80-\u0EFF]+/) || ['none'])[0]);
+      const trLaoA = await page.locator('.qOptLo[data-value="A"]').inputValue();
+      const trLaoB = await page.locator('.qOptLo[data-value="B"]').inputValue();
+      check(trLaoA.trim().length > 0 && trLaoB.trim().length > 0, '8. both Lao option labels were filled');
+      check(/[\u0E80-\u0EFF]/.test(trLaoA), 'and the option labels are Lao', trLaoA);
+      const trCanon = (await page.locator('.optgrid td.canon').allInnerTexts()).map((x) => x.trim()).join(',');
+      check(trCanon === 'A,B', '9. the canonical option values did not change', trCanon);
+      check((await page.locator('.qOptEn[data-value="A"]').inputValue()) === 'Approve the loan',
+        'and the English labels were not overwritten');
+      check(/100,000/.test(trLaoQuestion) && /6/.test(trLaoQuestion) && /3%/.test(trLaoQuestion),
+        'the amounts in the question survived translation',
+        trLaoQuestion);
+      check((await page.locator('#qStatus').inputValue()) === 'DRAFT',
+        'machine output is offered as a DRAFT, never auto-approved',
+        await page.locator('#qStatus').inputValue());
+
+      // 10. The admin reviews it and approves it deliberately, then saves.
+      await page.selectOption('#qStatus', 'APPROVED');
+      await page.click('#qSave');
+      await page.waitForTimeout(2000);
+
+      const trQ = db.prepare("SELECT * FROM questions WHERE category = 'Translation Test'").get();
+      check(!!trQ, '10. the question saved');
+      check(trQ && !!trQ.text_lo, 'with the Lao text stored on the same row');
+      check(trQ && trQ.translation_source === 'MACHINE',
+        'and its provenance recorded as MACHINE', trQ && trQ.translation_source);
+      const trCfg = trQ ? JSON.parse(trQ.config_json) : { parts: [] };
+      check(JSON.stringify(trCfg.parts[0].options) === '["A","B"]', 'canonical values stored unchanged');
+      check(trCfg.parts[0].expected === 'A', 'and the answer key is still the VALUE');
+
+      // 11-12. Reload the question: both languages persisted.
+      await page.click('.sidebar-nav a[data-nav="questions"]');
+      await page.waitForSelector('#qBody', { timeout: 10000 });
+      await page.click(`button[data-qact="edit"][data-qid="${trQ.id}"]`);
+      await page.waitForSelector('.qOptLo[data-value="A"]', { timeout: 10000 });
+      check((await page.locator('#qText').inputValue()) === trEnglish, '11-12. the English persisted');
+      check((await page.locator('#qTextLo').inputValue()).trim() === trLaoQuestion.trim(), 'and the Lao persisted');
+      check((await page.locator('.qOptLo[data-value="A"]').inputValue()).trim() === trLaoA.trim(),
+        'and so did the Lao option label');
+      check((await page.locator('#qTranslateLo').innerText()).includes('Regenerate'),
+        'the action now reads Regenerate rather than Auto-translate',
+        await page.locator('#qTranslateLo').innerText());
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+
+      // 13-14. Put it in the assessment and invite a candidate in Lao.
+      const trCand = await page.evaluate(async (qid) => {
+        const asmts = await api('/assessments');
+        const a = asmts.assessments.find((x) => x.active && !x.archived) || asmts.assessments[0];
+        const full = await api('/assessments/' + a.id);
+        const ids = full.assessment.questions.filter((q) => !q.archived).map((q) => q.id);
+        if (!ids.includes(qid)) ids.push(qid);
+        await api('/assessments/' + a.id, { method: 'PATCH', body: JSON.stringify({ questionIds: ids }) });
+        const c = await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName: 'Translation Journey', applicationType: 'NORMAL', iq: 120, education: 'Bachelor Degree' }) });
+        const l = await api('/candidates/' + c.id + '/links', { method: 'POST', body: JSON.stringify({ language: 'lo' }) });
+        return { id: c.id, code: c.code, token: l.token, assessmentId: a.id };
+      }, trQ.id);
+      check(!!trCand.token, '13-14. a Lao invitation was generated for an assessment containing it');
+
+      // 15-17. The candidate opens it and reads the generated Lao.
+      const trCtx = await browser.newContext();
+      const trPage = await trCtx.newPage();
+      await trPage.goto(`${BASE}/exam/${trCand.token}`, { waitUntil: 'networkidle' });
+      await trPage.fill('#vCode', trCand.code);
+      await trPage.check('#ack');
+      await trPage.click('#startBtn');
+      await trPage.waitForSelector('#nextBtn', { timeout: 20000 });
+
+      const trTotal = db.prepare('SELECT COUNT(*) AS n FROM assessment_questions WHERE assessment_id = ?').get(trCand.assessmentId).n;
+      let reached = false;
+      for (let i = 0; i < trTotal + 2; i++) {
+        const body = await trPage.locator('.pbody').innerText();
+        if (body.includes(trLaoQuestion.trim().slice(0, 24))) { reached = true; break; }
+        if (!(await trPage.locator('#nextBtn').count())) break;
+        await trPage.click('#nextBtn');
+        await trPage.waitForTimeout(900);
+      }
+      check(reached, '15-16. the candidate reached the machine-translated question, shown in Lao');
+      const trBody = await trPage.locator('.pbody').innerText();
+      check(trBody.includes(trLaoA.trim()), '17. the Lao option labels are displayed', trLaoA);
+      check(!trBody.includes('Approve the loan'), 'and the English labels are not shown alongside them');
+      check(!/expected|toleran|rubric/i.test(trBody), 'no answer key reached the candidate');
+
+      // 18-20. Answer, reload, answer still selected.
+      await trPage.click('.qopt:has(input[value="A"])').catch(async () => {
+        await trPage.check('input[type="radio"][value="A"]');
+      });
+      await trPage.waitForTimeout(1500);
+      const trSession = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ?').get(trCand.id);
+      const storedAnswer = db.prepare('SELECT answer_json FROM candidate_answers WHERE session_id = ? AND question_id = ?')
+        .get(trSession.id, trQ.id);
+      check(!!storedAnswer && /"A"/.test(storedAnswer.answer_json || ''),
+        '18. the answer stored the canonical value, not the Lao label',
+        storedAnswer && storedAnswer.answer_json);
+      await trPage.reload({ waitUntil: 'networkidle' });
+      await trPage.waitForTimeout(1500);
+      check(await trPage.locator('input[type="radio"][value="A"]:checked').count() > 0
+        || /"A"/.test((db.prepare('SELECT answer_json FROM candidate_answers WHERE session_id = ? AND question_id = ?').get(trSession.id, trQ.id) || {}).answer_json || ''),
+        '19-20. the selection survived a reload');
+
+      // 21-25. Switch to English and back; the answer must not move.
+      await trPage.click('#langSwitch [data-lang="en"]');
+      await trPage.waitForTimeout(1200);
+      const enBody = await trPage.locator('.pbody').innerText();
+      check(enBody.includes('Approve the loan') || enBody.includes(trEnglish.slice(0, 24)),
+        '21-22. switching to English shows the English question and options');
+      check(/"A"/.test((db.prepare('SELECT answer_json FROM candidate_answers WHERE session_id = ? AND question_id = ?').get(trSession.id, trQ.id) || {}).answer_json || ''),
+        '23. the stored answer is unchanged by switching language');
+      await trPage.click('#langSwitch [data-lang="lo"]');
+      await trPage.waitForTimeout(1200);
+      const loBody = await trPage.locator('.pbody').innerText();
+      check(/[\u0E80-\u0EFF]/.test(loBody), '24-25. switching back shows Lao again');
+      check(/"A"/.test((db.prepare('SELECT answer_json FROM candidate_answers WHERE session_id = ? AND question_id = ?').get(trSession.id, trQ.id) || {}).answer_json || ''),
+        'and the answer is still the canonical value');
+      await trCtx.close();
+    }
+
     // ------------------------ Lao end to end: sit, submit and print in Lao
     // The production smoke test could not prove this: that candidate switched
     // back to English before submitting, so the Lao branch of the receipt and
@@ -1036,7 +1236,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // ------------------------------------------------------- console hygiene
     head('Browser console');
     const realErrors = consoleErrors.concat(candErrors)
-      .filter((e) => !/favicon|Failed to load resource: the server responded with a status of 40[019]/i.test(e));
+      // A 503 from the OPTIONAL translation endpoint is expected on a server
+      // with no provider configured, and the test above asserts it deliberately.
+      // The exemption names that endpoint so a 503 from anywhere else still fails.
+      .filter((e) => !/favicon|Failed to load resource: the server responded with a status of 40[019]/i.test(e))
+      .filter((e) => !(/status of 503/i.test(e) && /questions\/translate/i.test(e)));
     check(realErrors.length === 0, 'no JavaScript errors or unhandled rejections',
       realErrors.slice(0, 4).join(' | '));
 

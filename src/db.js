@@ -47,6 +47,12 @@ ensureColumn('questions', 'archived', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('questions', 'archived_at', 'TEXT');
 ensureColumn('questions', 'archived_by', 'TEXT');
 
+// Provenance of a Lao translation: 'MACHINE' (produced by the automatic
+// translator, not yet rewritten by a person) or 'HUMAN'. Additive and nullable,
+// so every existing question keeps its meaning: unknown provenance, which is
+// exactly what it was. translation_status is untouched.
+ensureColumn('questions', 'translation_source', 'TEXT');
+
 // Candidate display language for a session. Presentation only.
 ensureColumn('assessment_sessions', 'language', "TEXT NOT NULL DEFAULT 'en'");
 

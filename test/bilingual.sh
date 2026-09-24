@@ -4,6 +4,9 @@
 cd "$(dirname "$0")/.." || exit 1
 source test/lib.sh
 
+# Translation is capped per admin user per hour. The ceiling is lowered here so
+# the limiter can be reached in a test run instead of being taken on trust.
+export TRANSLATE_RATE_LIMIT_PER_HOUR=30
 start_server 4127
 
 SUPER=$(login_token superadmin@lalco.demo "$DEMO_PASSWORD")
@@ -439,5 +442,141 @@ expect_eq "no Lao text was fabricated for it" "" "$(dbq "SELECT COALESCE(text_lo
 expect_eq "and no Lao config overlay was fabricated" "" "$(dbq "SELECT COALESCE(config_lo_json,'') AS v FROM questions WHERE id = '$ENONLY'")"
 expect_eq "no question is MISSING a translation yet carries Lao text" 0 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE translation_status = 'MISSING' AND COALESCE(TRIM(text_lo),'') <> ''")"
 expect_eq "and no question carries a Lao overlay without Lao text" 0 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE COALESCE(TRIM(text_lo),'') = '' AND COALESCE(config_lo_json,'') <> ''")"
+
+# ===========================================================================
+# Phase 6 - automatic machine translation of candidate-visible wording.
+#
+# These tests never fake a translation. They prove the guards that protect
+# marking, the authorisation, and the behaviour when no provider is configured.
+# The single test that needs a live provider runs only when one is configured,
+# and says plainly when it did not run.
+c_head "TRANSLATION VALIDATORS - what may be sent, and what may come back"
+TR=$(cd "$BACKEND_DIR" && "$NODE" "$(native_path "$BACKEND_DIR/test/inspect_translation.js")")
+check "the translation service could be inspected" "$([ -n "$TR" ] && echo 0 || echo 1)" "$TR"
+expect_eq "every malformed admin request is rejected" "" "$(jsonval "$TR" 'd.requestAcceptedAll.join(",")')"
+expect_eq "every malformed provider response is rejected" "" "$(jsonval "$TR" 'd.responseAcceptedAll.join(",")')"
+expect_eq "a renamed canonical value is rejected" "BAD_PROVIDER_RESPONSE" "$(jsonval "$TR" 'd.responseRejections.renamedValue')"
+expect_eq "reordered canonical values are rejected" "BAD_PROVIDER_RESPONSE" "$(jsonval "$TR" 'd.responseRejections.reorderedValues')"
+expect_eq "a dropped option is rejected" "BAD_PROVIDER_RESPONSE" "$(jsonval "$TR" 'd.responseRejections.tooFewOptions')"
+expect_eq "an invented extra option is rejected" "BAD_PROVIDER_RESPONSE" "$(jsonval "$TR" 'd.responseRejections.tooManyOptions')"
+expect_eq "a missing question is rejected" "BAD_PROVIDER_RESPONSE" "$(jsonval "$TR" 'd.responseRejections.missingQuestion')"
+expect_eq "malformed JSON from the provider is rejected" "BAD_PROVIDER_RESPONSE" "$(jsonval "$TR" 'd.responseRejections.notAnObject')"
+expect_eq "translating into the same language is rejected" "BAD_REQUEST" "$(jsonval "$TR" 'd.requestRejections.sameLanguage')"
+expect_eq "an unsupported language is rejected" "BAD_REQUEST" "$(jsonval "$TR" 'd.requestRejections.unsupportedTarget')"
+expect_eq "an oversized question is rejected" "BAD_REQUEST" "$(jsonval "$TR" 'd.requestRejections.oversizedQuestion')"
+expect_eq "too many options are rejected" "BAD_REQUEST" "$(jsonval "$TR" 'd.requestRejections.tooManyOptions')"
+expect_eq "a good provider response is accepted" "true" "$(jsonval "$TR" 'String(d.goodAccepted)')"
+expect_eq "and its canonical values come back untouched" "A,B" "$(jsonval "$TR" 'd.goodValues')"
+expect_eq "numbers and currency survive request normalisation" "true" "$(jsonval "$TR" 'String(d.numbersPreservedInRequest)')"
+expect_eq "an option with no label of its own reads as its value" "true" "$(jsonval "$TR" 'String(d.labelDefaultsToValue)')"
+expect_eq "the service exports no key of any kind" "false" "$(jsonval "$TR" 'String(d.exportsKey)')"
+expect_not_contains "the service source carries no hardcoded key" "sk-ant" "$(cat src/lib/translation.js)"
+expect_not_contains "and no hardcoded Lao dictionary" "LAO_DICTIONARY" "$(cat src/lib/translation.js)"
+expect_not_contains "the browser bundle never names the provider key" "ANTHROPIC_API_KEY" "$(cat public/admin/app.js)"
+expect_not_contains "and the candidate bundle does not either" "ANTHROPIC" "$(cat public/exam/app.js)"
+
+c_head "TRANSLATION ENDPOINT - authorisation"
+TRURL="$BASE/api/admin/questions/translate"
+TRBODY='{"sourceLanguage":"en","targetLanguage":"lo","question":"What is 10% of 1000?","options":[{"value":"A","label":"100"},{"value":"B","label":"10"}]}'
+expect_eq "an unauthenticated request is refused" 401 "$(post_json_code POST "$TRURL" '' "$TRBODY")"
+expect_eq "a Recruiter cannot translate" 403 "$(post_json_code POST "$TRURL" "$RECRUITER" "$TRBODY")"
+expect_eq "an Interviewer cannot translate" 403 "$(post_json_code POST "$TRURL" "$INTERVIEWER" "$TRBODY")"
+expect_eq "an Evaluator can read the bank but cannot translate" 403 "$(post_json_code POST "$TRURL" "$EVALUATOR" "$TRBODY")"
+expect_eq "a candidate exam token is not accepted as authorisation" 401 "$(post_json_code POST "$TRURL" "$TEN" "$TRBODY")"
+expect_eq "there is no candidate-facing translation route" 404 "$(http_code POST "$BASE/api/exam/$TEN/translate")"
+
+c_head "TRANSLATION ENDPOINT - request validation (before any provider call)"
+expect_eq "an empty body is rejected" 400 "$(post_json_code POST "$TRURL" "$HR" '{}')"
+expect_eq "a missing question is rejected" 400 "$(post_json_code POST "$TRURL" "$HR" '{"sourceLanguage":"en","targetLanguage":"lo"}')"
+expect_eq "a blank question is rejected" 400 "$(post_json_code POST "$TRURL" "$HR" '{"sourceLanguage":"en","targetLanguage":"lo","question":"   "}')"
+expect_eq "the same source and target is rejected" 400 "$(post_json_code POST "$TRURL" "$HR" '{"sourceLanguage":"en","targetLanguage":"en","question":"x"}')"
+expect_eq "an unsupported language is rejected" 400 "$(post_json_code POST "$TRURL" "$HR" '{"sourceLanguage":"en","targetLanguage":"fr","question":"x"}')"
+expect_eq "an option with no canonical value is rejected" 400 "$(post_json_code POST "$TRURL" "$HR" '{"sourceLanguage":"en","targetLanguage":"lo","question":"x","options":[{"label":"a"}]}')"
+expect_eq "options that are not a list are rejected" 400 "$(post_json_code POST "$TRURL" "$HR" '{"sourceLanguage":"en","targetLanguage":"lo","question":"x","options":"A,B"}')"
+BIG=$("$NODE" -e "console.log(JSON.stringify({sourceLanguage:'en',targetLanguage:'lo',question:'x'.repeat(5000)}))")
+expect_eq "an oversized payload is rejected" 400 "$(post_json_code POST "$TRURL" "$HR" "$BIG")"
+expect_eq "malformed JSON is still the controlled 400 from Phase 4" 400 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$TRURL" -H "Authorization: Bearer $HR" -H 'Content-Type: application/json' -d '{"sourceLanguage":')"
+
+c_head "TRANSLATION ENDPOINT - provider configuration"
+CONFIGURED=$(jsonval "$(http_body GET "$BASE/api/admin/questions/translate/limits" "$HR")" 'String(d.configured)')
+expect_contains "the admin bank reports whether translation is available" 'translationConfigured' "$(http_body GET "$BASE/api/admin/questions" "$HR")"
+LIMITS_BODY=$(http_body GET "$BASE/api/admin/questions/translate/limits" "$HR")
+expect_contains "the limits are published to admins" 'questionChars' "$LIMITS_BODY"
+expect_not_contains "the limits response carries no key" 'ANTHROPIC' "$LIMITS_BODY"
+expect_not_contains "and no model or provider detail" 'api.anthropic.com' "$LIMITS_BODY"
+
+if [ "$CONFIGURED" = "true" ]; then
+  c_head "TRANSLATION - REAL provider call (credentials are configured)"
+  REAL=$(post_json POST "$TRURL" "$HR" "$TRBODY")
+  REALQ=$(jsonval "$REAL" 'd.question')
+  check "the provider returned question text" "$([ -n "$REALQ" ] && echo 0 || echo 1)" "$REALQ"
+  check "the translated question is not the English source" "$([ "$REALQ" != "What is 10% of 1000?" ] && echo 0 || echo 1)" "$REALQ"
+  expect_eq "canonical values come back unchanged" "A,B" "$(jsonval "$REAL" 'd.options.map(o=>o.value).join(",")')"
+  check "every option came back with a label" "$([ "$(jsonval "$REAL" 'd.options.filter(o=>o.label&&o.label.trim()).length')" = "2" ] && echo 0 || echo 1)"
+  expect_eq "the result is declared MACHINE output" "true" "$(jsonval "$REAL" 'String(d.machineTranslated)')"
+  expect_eq "and is offered as a DRAFT, never APPROVED" "DRAFT" "$(jsonval "$REAL" 'd.translationStatus')"
+  expect_contains "the numbers in the question survived" "1000" "$REALQ"
+  expect_not_contains "the response leaks no provider metadata" 'anthropic' "$REAL"
+else
+  c_head "TRANSLATION - provider NOT configured on this server"
+  UNCONF=$(post_json POST "$TRURL" "$HR" "$TRBODY")
+  expect_eq "a translation request answers 503, not a fake translation" 503 "$(post_json_code POST "$TRURL" "$HR" "$TRBODY")"
+  expect_contains "and says it is a configuration problem" 'not configured' "$UNCONF"
+  expect_eq "the response says so in a machine-readable way" "false" "$(jsonval "$UNCONF" 'String(d.configured)')"
+  expect_not_contains "no translated text is invented" 'question":"' "$UNCONF"
+  expect_not_contains "and the key name is never echoed" 'ANTHROPIC' "$UNCONF"
+  printf '  [33mNOTE[0m  ANTHROPIC_API_KEY is not set, so the live provider path was NOT exercised.\n'
+fi
+
+c_head "TRANSLATION COST CONTROL - the per-admin ceiling is real"
+# Only AUTHORISED requests consume budget: the role check runs before the
+# limiter, so a refused Recruiter cannot exhaust an admin's allowance.
+SEEN_429=0
+for i in $(seq 1 45); do
+  CODE=$(post_json_code POST "$TRURL" "$HR" "$TRBODY")
+  if [ "$CODE" = "429" ]; then SEEN_429=1; break; fi
+done
+check "an admin hitting translate repeatedly is rate limited" "$([ "$SEEN_429" = "1" ] && echo 0 || echo 1)" "no 429 within 45 requests"
+RL=$(post_json POST "$TRURL" "$HR" "$TRBODY")
+expect_contains "and is told to wait rather than shown an error page" 'Too many translation requests' "$RL"
+expect_not_contains "the rate-limit message leaks no provider detail" 'anthropic' "$RL"
+expect_eq "a DIFFERENT admin still has their own allowance" 0 "$(post_json_code POST "$TRURL" "$SUPER" "$TRBODY" | grep -c '^429$')"
+expect_eq "the server keeps a per-user in-flight guard against double clicks" 1 "$(grep -c 'translationsInFlight' src/routes/admin/questions.js | awk '{print ($1>0)?1:0}')"
+expect_contains "which answers 409 rather than paying for a second call" '409' "$(grep -A 2 'translationsInFlight.has' src/routes/admin/questions.js)"
+
+c_head "TRANSLATION PROVENANCE - machine output is never passed off as reviewed"
+MQ='{"type":"CALC","text":"Machine translated question","textLo":"ຂໍ້ຄວາມຈາກເຄື່ອງ","translationStatus":"DRAFT","translationSource":"MACHINE","category":"Machine Test","config":{"parts":[{"key":"a","label":"Answer","marks":2,"expected":5,"tol":0}]}}'
+MQID=$(jsonval "$(post_json POST "$BASE/api/admin/questions" "$HR" "$MQ")" 'd.id')
+check "a machine-translated question can be saved" "$([ -n "$MQID" ] && echo 0 || echo 1)"
+expect_eq "its provenance is recorded as MACHINE" "MACHINE" "$(dbq "SELECT translation_source AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "and its status is DRAFT, not APPROVED" "DRAFT" "$(dbq "SELECT translation_status AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "the admin bank reports the provenance" "MACHINE" "$(jsonval "$(http_body GET "$BASE/api/admin/questions/$MQID" "$HR")" 'd.question.translationSource')"
+expect_eq "an invalid provenance value is rejected" 400 "$(post_json_code PATCH "$BASE/api/admin/questions/$MQID" "$HR" '{"translationSource":"ROBOT"}')"
+
+# A DRAFT is never served to a candidate, whoever produced it.
+public_json POST "$BASE/api/exam/$TEN/language" '{"language":"lo"}' > /dev/null
+DRAFT_SERVED=$(http_body GET "$BASE/api/exam/$TEN/questions")
+expect_not_contains "a machine DRAFT is never shown to a candidate" "ຂໍ້ຄວາມຈາກເຄື່ອງ" "$DRAFT_SERVED"
+
+c_head "TRANSLATION PROVENANCE - a human edit reclassifies it"
+post_json PATCH "$BASE/api/admin/questions/$MQID" "$HR" '{"textLo":"ຂໍ້ຄວາມທີ່ຄົນແກ້ໄຂ"}' > /dev/null
+expect_eq "rewriting the Lao by hand makes it HUMAN" "HUMAN" "$(dbq "SELECT translation_source AS v FROM questions WHERE id = '$MQID'")"
+post_json PATCH "$BASE/api/admin/questions/$MQID" "$HR" '{"translationSource":"MACHINE"}' > /dev/null
+expect_eq "an explicit declaration is honoured" "MACHINE" "$(dbq "SELECT translation_source AS v FROM questions WHERE id = '$MQID'")"
+post_json PATCH "$BASE/api/admin/questions/$MQID" "$HR" '{"category":"Machine Test Renamed"}' > /dev/null
+expect_eq "an unrelated edit leaves the provenance alone" "MACHINE" "$(dbq "SELECT translation_source AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "and leaves the Lao text alone" "ຂໍ້ຄວາມທີ່ຄົນແກ້ໄຂ" "$(dbq "SELECT text_lo AS v FROM questions WHERE id = '$MQID'")"
+post_json PATCH "$BASE/api/admin/questions/$MQID" "$HR" '{"textLo":null}' > /dev/null
+expect_eq "clearing the Lao clears the provenance" "" "$(dbq "SELECT COALESCE(translation_source,'') AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "and the status falls back to MISSING" "MISSING" "$(dbq "SELECT translation_status AS v FROM questions WHERE id = '$MQID'")"
+
+c_head "TRANSLATION PROVENANCE - approving machine output is a human decision"
+post_json PATCH "$BASE/api/admin/questions/$MQID" "$HR" '{"textLo":"ຂໍ້ຄວາມຈາກເຄື່ອງ","translationSource":"MACHINE","translationStatus":"APPROVED"}' > /dev/null
+expect_eq "an admin may approve a machine translation deliberately" "APPROVED" "$(dbq "SELECT translation_status AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "but the provenance still records that a machine wrote it" "MACHINE" "$(dbq "SELECT translation_source AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "editing the English demotes the approval back to DRAFT" "DRAFT" "$(post_json PATCH "$BASE/api/admin/questions/$MQID" "$HR" '{"text":"Machine translated question, reworded"}' > /dev/null; dbq "SELECT translation_status AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "without touching the Lao text" "ຂໍ້ຄວາມຈາກເຄື່ອງ" "$(dbq "SELECT text_lo AS v FROM questions WHERE id = '$MQID'")"
+expect_eq "and without inventing a new provenance" "MACHINE" "$(dbq "SELECT translation_source AS v FROM questions WHERE id = '$MQID'")"
+public_json POST "$BASE/api/exam/$TEN/language" '{"language":"en"}' > /dev/null
 
 summary "BILINGUAL QUESTION BANK + LANGUAGE SWITCH"
