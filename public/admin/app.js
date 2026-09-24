@@ -355,19 +355,48 @@ function tabEligibility(d, el) {
   <div class="table-wrap"><table><thead><tr><th>Condition</th><th>Candidate Value</th><th>Required</th><th>Status</th><th>Reason</th></tr></thead>
   <tbody>${d.eligibility.checks.map((ch) => `<tr><td>${ch.condition}</td><td>${esc(ch.candidateValue)}</td><td>${esc(ch.requiredValue)}</td><td>${ch.status === 'PASSED' ? '<span class="badge badge-success">PASSED</span>' : ch.status === 'FAILED' ? '<span class="badge badge-danger">FAILED</span>' : '<span class="badge badge-neutral">INFO</span>'}</td><td class="faint">${esc(ch.reason)}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
+// One place that names a language, so every admin screen says the same thing.
+function langLabel(code) { return code === 'lo' ? 'ລາວ (Lao)' : 'English'; }
+
+// What a Lao candidate would still read in English on this question. The server
+// computes it; this only phrases it. A gap is not an error — the English
+// fallback is deliberate — so it is shown as information, and only escalated
+// when the question has been APPROVED and is therefore live in Lao.
+function laoGapNote(q) {
+  const g = q && q.laoGaps;
+  if (!g || q.laoComplete) return '';
+  const bits = [];
+  if (g.text) bits.push('the question text');
+  if (g.parts && g.parts.length) bits.push(g.parts.length + ' step' + (g.parts.length === 1 ? '' : 's'));
+  if (g.options && g.options.length) bits.push(g.options.length + ' option' + (g.options.length === 1 ? '' : 's'));
+  if (!bits.length) return '';
+  const live = q.translationStatus === 'APPROVED';
+  return `<div class="faint" style="font-size:11.5px;margin:-2px 0 8px;color:${live ? 'var(--danger,#A13B2F)' : 'inherit'};">`
+    + `${live ? '⚠ Shown in Lao now, but ' : 'Not yet translated: '}`
+    + `${bits.join(', ')} would still be read in English. Nothing is auto-translated.</div>`;
+}
+
 function tabAssessment(d, el, id) {
   const active = d.links.find((l) => l.status === 'ACTIVE');
   el.innerHTML = `<div class="grid grid-2">
     <div class="card"><div class="section-title">Secure exam link</div>
-      ${active ? `<div class="mono faint" style="word-break:break-all;">${location.origin}/exam/${active.token}</div><div class="faint" style="margin-top:6px;">Created ${fmtT(active.created_at)} · Expires ${fmtT(active.expires_at)}</div>` : '<p class="faint">No active link.</p>'}
+      ${active ? `<div class="mono faint" style="word-break:break-all;">${location.origin}/exam/${active.token}</div><div class="faint" style="margin-top:6px;">Created ${fmtT(active.created_at)} · Expires ${fmtT(active.expires_at)} · Language <b>${esc(langLabel(active.language))}</b></div>` : '<p class="faint">No active link.</p>'}
+      <div class="field" style="margin-top:12px;">
+        <label class="field-label" for="linkLangEn">Candidate language</label>
+        <div class="langpick" id="linkLang" role="radiogroup" aria-label="Candidate language">
+          <label class="langopt"><input type="radio" id="linkLangEn" name="linkLanguage" value="en" ${active && active.language === 'lo' ? '' : 'checked'}><span>English</span></label>
+          <label class="langopt"><input type="radio" id="linkLangLo" name="linkLanguage" value="lo" ${active && active.language === 'lo' ? 'checked' : ''}><span>ລາວ (Lao)</span></label>
+        </div>
+        <span class="faint">The exam opens in this language automatically — the candidate does not have to translate the page. They may still switch. Language never changes the answer key, the marks, the tolerance or the timing.</span>
+      </div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-gold btn-sm" id="genLink" data-busy="Generating…">Generate New Link</button>
         ${active ? `<button class="btn btn-sm" id="copyLink">Copy Link</button><button class="btn btn-sm" id="copyWA">Copy WhatsApp Message</button><button class="btn btn-danger btn-sm" id="revokeLink" data-busy="Revoking…" data-link="${active.id}">Revoke Link</button>` : ''}
       </div>
     </div>
-    <div class="card"><div class="section-title">Link history</div><div class="table-wrap"><table><thead><tr><th>Token</th><th>Status</th><th>Created</th><th>Expires</th><th>Accessed</th><th>Actions</th></tr></thead>
-    <tbody>${d.links.map((l) => `<tr><td class="mono faint">${l.token.slice(0, 10)}…</td><td><span class="badge badge-${linkBadgeTone(l.liveStatus)}">${l.liveStatus}</span></td><td class="faint">${fmtT(l.created_at)}</td><td class="faint">${fmtT(l.expires_at)}</td><td class="faint">${l.first_access_at ? fmtT(l.first_access_at) : '—'}</td>
-      <td style="white-space:nowrap;">${linkActionsHTML(l)}</td></tr>`).join('') || '<tr><td colspan="6" class="faint">No links yet.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div class="section-title">Link history</div><div class="table-wrap"><table><thead><tr><th>Token</th><th>Status</th><th>Language</th><th>Created</th><th>Expires</th><th>Accessed</th><th>Actions</th></tr></thead>
+    <tbody>${d.links.map((l) => `<tr><td class="mono faint">${l.token.slice(0, 10)}…</td><td><span class="badge badge-${linkBadgeTone(l.liveStatus)}">${l.liveStatus}</span></td><td>${esc(langLabel(l.language))}</td><td class="faint">${fmtT(l.created_at)}</td><td class="faint">${fmtT(l.expires_at)}</td><td class="faint">${l.first_access_at ? fmtT(l.first_access_at) : '—'}</td>
+      <td style="white-space:nowrap;">${linkActionsHTML(l)}</td></tr>`).join('') || '<tr><td colspan="7" class="faint">No links yet.</td></tr>'}</tbody></table></div></div>
   </div>
   ${candidateLifecycleHTML(d)}
   ${submissionRecordHTML(d.session)}
@@ -376,7 +405,13 @@ function tabAssessment(d, el, id) {
     <div class="kpi"><div class="num">${d.scores && d.scores.essay_marks != null ? d.scores.essay_marks : '—'}/30</div><div class="lbl">Written</div></div>
     <div class="kpi"><div class="num">${d.scores && d.scores.interview_marks != null ? d.scores.interview_marks : '—'}/40</div><div class="lbl">Interview</div></div>
   </div></div>`;
-  $('#genLink').onclick = async () => { await api('/candidates/' + id + '/links', { method: 'POST' }); toast('New secure link generated.'); viewCandidateDetail([id], el.parentElement); };
+  $('#genLink').onclick = async () => {
+    const picked = $('#linkLang input:checked', el);
+    const language = picked ? picked.value : 'en';
+    const r = await api('/candidates/' + id + '/links', { method: 'POST', body: JSON.stringify({ language }) });
+    toast('New secure link generated · ' + langLabel(r.language) + '.');
+    viewCandidateDetail([id], el.parentElement);
+  };
   if ($('#copyLink')) $('#copyLink').onclick = () => copyText(`${location.origin}/exam/${active.token}`, 'Link copied.');
   wireLinkActions(d, id, el);
   wireCandidateLifecycle(d, id, el);
@@ -983,8 +1018,9 @@ function questionCardHTML(q) {
       <span>${esc(q.category || q.type)} <span class="faint">${q.max_marks} marks</span>
         ${q.archived ? '<span class="badge badge-neutral">ARCHIVED</span>' : ''}
         ${q.active ? '' : '<span class="badge badge-warning">INACTIVE</span>'}</span>
-      <span>Lao: ${translationBadge(q.translationStatus)}</span>
+      <span>Lao: ${translationBadge(q.translationStatus)}${q.laoComplete ? ' <span class="badge badge-success">COMPLETE</span>' : ''}</span>
     </div>
+    ${laoGapNote(q)}
     <div class="faint" style="font-size:12px;margin:-4px 0 8px;">${
       q.usedByAssessments && q.usedByAssessments.length
         ? 'Used by: ' + q.usedByAssessments.map((n) => esc(n)).join(', ')
@@ -1034,6 +1070,90 @@ function wireQuestionActions(questions, reload) {
   });
 }
 
+// Bilingual editor for everything a CANDIDATE reads on a calculation question:
+// each step's wording and each choice option's wording, English beside Lao.
+//
+// The canonical option VALUE is shown read-only and is never edited here. It is
+// what the answer is stored as and what grading compares against, so relabelling
+// an option in either language cannot move a mark or invalidate an answer that
+// has already been saved.
+//
+// The marking configuration above stays the authority for STRUCTURE — keys,
+// marks, expected answers, tolerances, which options exist. This panel is
+// rebuilt from it whenever it changes, so the two can never disagree.
+function bilingualEditorHTML(config, cfgLo) {
+  const parts = config && Array.isArray(config.parts) ? config.parts : [];
+  if (!parts.length) {
+    return '<p class="faint">Add at least one part to the marking configuration above, then its English and Lao wording appears here.</p>';
+  }
+  const lo = cfgLo && cfgLo.parts && typeof cfgLo.parts === 'object' ? cfgLo.parts : {};
+  return parts.map((p) => {
+    const entry = lo[p.key] || {};
+    const loOpts = entry.options && typeof entry.options === 'object' ? entry.options : {};
+    const enOpts = p.optionLabels && typeof p.optionLabels === 'object' ? p.optionLabels : {};
+    const isChoice = p.type === 'choice';
+    const values = isChoice && Array.isArray(p.options) ? p.options : [];
+    return `<div class="card" style="margin-top:10px;padding:12px;" data-partcard="${esc(p.key)}">
+      <div class="faint" style="font-size:11.5px;">Part <b class="mono">${esc(p.key)}</b> · ${Number(p.marks) || 0} mark${Number(p.marks) === 1 ? '' : 's'} · ${isChoice ? 'choice' : 'numeric'}</div>
+      <div class="bilrow" style="margin-top:6px;">
+        <div class="field"><label class="field-label"><span class="biltag en">EN</span> Step wording (English) *</label>
+          <input class="qPartEn" data-part="${esc(p.key)}" value="${esc(p.label || '')}"></div>
+        <div class="field"><label class="field-label"><span class="biltag lo">LO</span> Step wording (Lao)</label>
+          <input class="qPartLo" data-part="${esc(p.key)}" value="${esc(entry.label || '')}" placeholder="Leave blank to show the English"></div>
+      </div>
+      ${isChoice ? `<table class="optgrid"><thead><tr><th>Canonical value (graded)</th><th><span class="biltag en">EN</span> English label</th><th><span class="biltag lo">LO</span> Lao label</th></tr></thead>
+        <tbody>${values.map((v) => `<tr data-optrow="${esc(v)}">
+          <td class="canon">${esc(v)}</td>
+          <td><input class="qOptEn" data-part="${esc(p.key)}" data-value="${esc(v)}" value="${esc(enOpts[v] || '')}" placeholder="${esc(v)}"></td>
+          <td><input class="qOptLo" data-part="${esc(p.key)}" data-value="${esc(v)}" value="${esc(loOpts[v] || '')}" placeholder="Leave blank to show the English"></td>
+        </tr>`).join('')}</tbody></table>
+        <span class="faint">The canonical value is read-only on purpose — it is what the candidate's answer is stored as and graded against. Blank label = show the canonical value.</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// Reads the panel back. English wording is merged into the marking
+// configuration; Lao becomes the overlay. Blank fields are omitted rather than
+// written as empty strings, so "not translated" stays distinguishable from
+// "translated to nothing" and the English fallback keeps working.
+function collectBilingual(bg, config) {
+  const parts = config && Array.isArray(config.parts) ? config.parts : [];
+  const byKey = {};
+  parts.forEach((p) => { byKey[p.key] = p; });
+
+  $$('.qPartEn', bg).forEach((inp) => {
+    const p = byKey[inp.dataset.part];
+    if (p) { const v = inp.value.trim(); if (v) p.label = v; }
+  });
+  $$('.qOptEn', bg).forEach((inp) => {
+    const p = byKey[inp.dataset.part];
+    if (!p || !Array.isArray(p.options) || !p.options.includes(inp.dataset.value)) return;
+    const v = inp.value.trim();
+    if (!v) { if (p.optionLabels) delete p.optionLabels[inp.dataset.value]; return; }
+    p.optionLabels = p.optionLabels || {};
+    p.optionLabels[inp.dataset.value] = v;
+  });
+  parts.forEach((p) => {
+    if (p.optionLabels && !Object.keys(p.optionLabels).length) delete p.optionLabels;
+  });
+
+  const loParts = {};
+  $$('.qPartLo', bg).forEach((inp) => {
+    const v = inp.value.trim();
+    if (v && byKey[inp.dataset.part]) loParts[inp.dataset.part] = { label: v };
+  });
+  $$('.qOptLo', bg).forEach((inp) => {
+    const p = byKey[inp.dataset.part];
+    const v = inp.value.trim();
+    if (!v || !p || !Array.isArray(p.options) || !p.options.includes(inp.dataset.value)) return;
+    loParts[inp.dataset.part] = loParts[inp.dataset.part] || {};
+    loParts[inp.dataset.part].options = loParts[inp.dataset.part].options || {};
+    loParts[inp.dataset.part].options[inp.dataset.value] = v;
+  });
+
+  return { config, configLo: Object.keys(loParts).length ? { parts: loParts } : null };
+}
+
 // Create / edit. English is required; Lao is optional and can only be marked
 // APPROVED deliberately — nothing is auto-translated anywhere in this app.
 function openQuestionModal(question, type, onDone) {
@@ -1078,9 +1198,9 @@ function openQuestionModal(question, type, onDone) {
         ? 'Each part: {"key","label","marks","expected","tol"} — or {"type":"choice","options":[...],"expected":"..."} for a choice. Total marks are computed from the parts.'
         : 'Each criterion: {"key","label","max"}. Total marks are computed from the rubric.'}</span></div>
 
-    ${type === 'CALC' ? `<div class="field"><label class="field-label">Lao text for the parts (labels and option wording only)</label>
-      <textarea id="qConfigLo" class="mono" style="min-height:110px;font-size:12px;">${esc(JSON.stringify(cfgLo, null, 2))}</textarea>
-      <span class="faint">{"parts":{"&lt;key&gt;":{"label":"…","options":{"Accept":"…","Reject":"…"}}}} — option <b>values</b> are never translated, only how they read, so marking is unaffected.</span></div>` : ''}
+    ${type === 'CALC' ? `<div class="field"><label class="field-label">Candidate wording — English and Lao</label>
+      <div id="qBilingual"></div>
+      <span class="faint">Rebuilt automatically when the marking configuration above changes.</span></div>` : ''}
 
     <p class="faint">English is the source language. A Lao translation belongs to the same question ID, so marks, answer key and history are shared.</p>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -1094,19 +1214,53 @@ function openQuestionModal(question, type, onDone) {
   $('#qCancel', bg).onclick = close;
   $('#qText', bg).focus();
 
+  // The panel is derived from the marking configuration, so it is rebuilt
+  // whenever that changes. Lao already typed is carried across by key and by
+  // canonical value, so editing the JSON never silently discards a translation.
+  const panel = $('#qBilingual', bg);
+  // Rebuilding the panel replaces its inputs. Two rules keep that from
+  // destroying work in progress:
+  //   * only write when the markup would actually differ, so a rebuild that
+  //     changes nothing leaves every node — and the caret — alone;
+  //   * never rebuild while the caret is inside the panel. The textarea's
+  //     `change` fires as focus LEAVES it, which is exactly when someone
+  //     clicks from the configuration into a Lao field; replacing that field
+  //     mid-click loses the keystrokes and sends them back to the textarea.
+  // The check is deferred a tick because focus has not settled while `change`
+  // is being dispatched.
+  function renderBilingual(cfgSource, loSource) {
+    if (!panel) return;
+    const html = bilingualEditorHTML(cfgSource, loSource);
+    if (html !== panel.innerHTML) panel.innerHTML = html;
+  }
+  if (panel) {
+    renderBilingual(cfg, cfgLo);
+    $('#qConfig', bg).addEventListener('change', () => {
+      setTimeout(() => {
+        if (!bg.isConnected || panel.contains(document.activeElement)) return;
+        let parsed;
+        try { parsed = JSON.parse($('#qConfig', bg).value); }
+        catch (e) { return; }   // invalid JSON is reported on save, not mid-typing
+        // Lao already typed is carried across by part key and canonical value,
+        // so editing the configuration never silently discards a translation.
+        const carried = collectBilingual(bg, JSON.parse(JSON.stringify(parsed))).configLo;
+        renderBilingual(parsed, carried);
+      }, 0);
+    });
+  }
+
   $('#qSave', bg).onclick = async () => {
     const text = $('#qText', bg).value.trim();
     if (!text) return toast('The English question text is required.', true);
 
-    let config, configLo = null;
+    let config, configLo;
     try { config = JSON.parse($('#qConfig', bg).value); }
     catch (e) { return toast('The marking configuration is not valid JSON.', true); }
-    if ($('#qConfigLo', bg)) {
-      const raw = $('#qConfigLo', bg).value.trim();
-      if (raw) {
-        try { configLo = JSON.parse(raw); }
-        catch (e) { return toast('The Lao part text is not valid JSON.', true); }
-      }
+    if (panel) {
+      // CALC: the panel is the authority for candidate-facing wording.
+      const merged = collectBilingual(bg, config);
+      config = merged.config;
+      configLo = merged.configLo;
     }
 
     const payload = {
@@ -1118,8 +1272,10 @@ function openQuestionModal(question, type, onDone) {
       explanation: $('#qExplanation', bg).value.trim() || null,
       active: $('#qActive', bg).value === '1',
       config,
-      configLo,
     };
+    // Only a CALC question has candidate-facing config strings. Omitting the
+    // key for an essay leaves whatever is stored untouched rather than wiping it.
+    if (panel) payload.configLo = configLo;
 
     // The server validates all of this again and is the authority; these
     // client checks only save a round trip.

@@ -50,6 +50,13 @@ ensureColumn('questions', 'archived_by', 'TEXT');
 // Candidate display language for a session. Presentation only.
 ensureColumn('assessment_sessions', 'language', "TEXT NOT NULL DEFAULT 'en'");
 
+// The language the admin chose when generating an invitation, so the exam
+// opens in it automatically. Existing links default to 'en', which is exactly
+// how they already behaved, so no historical invitation changes meaning.
+// The CHECK lives in schema.sql for fresh databases; SQLite cannot add one to
+// an existing table, so the route is the authority (see normaliseLanguage).
+ensureColumn('assessment_links', 'language', "TEXT NOT NULL DEFAULT 'en'");
+
 
 
 // Priority 1 — candidate archiving.

@@ -208,7 +208,12 @@ CREATE TABLE IF NOT EXISTS assessment_links (
   disabled_by TEXT,
   expiry_extended_by TEXT,
   expiry_extended_at TEXT,
-  first_access_at TEXT
+  first_access_at TEXT,
+  -- The language the ADMIN chose when generating this invitation. The exam
+  -- opens in it automatically, so the candidate never has to translate the
+  -- page themselves. Presentation only: it never affects the deadline, the
+  -- answers, the answer key or the marking. The candidate may still switch.
+  language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('en','lo'))
 );
 CREATE INDEX IF NOT EXISTS idx_links_candidate ON assessment_links(candidate_id);
 

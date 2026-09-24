@@ -136,6 +136,10 @@ function respondWithCandidateContext(req, res, link, session) {
     questionCount: attachedCount || calcCount + essayCount,
     durationMinutes: assessment ? assessment.duration_minutes : s.assessment_duration_minutes,
     verification: { requireCandidateId: !!s.require_candidate_id, requirePhone: !!s.require_phone, requireDob: !!s.require_dob },
+    // The language this invitation was generated for. The portal opens in it
+    // before any session exists, so the very first screen a candidate sees is
+    // already in the right language. They can still switch.
+    linkLanguage: normaliseLanguage(link.language),
     session: session ? {
       // `status` is what the candidate's portal keys off: SUBMITTED for a manual
       // submission, AUTO_SUBMITTED when the server finalized it on time expiry.
@@ -207,7 +211,11 @@ router.post('/:token/start', (req, res) => {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + durationMinutes * 60000).toISOString();
   // The language chosen on the instructions screen carries into the session.
-  const startLanguage = normaliseLanguage(b.language);
+  // When the candidate expressed no preference, the language the ADMIN chose
+  // when generating the invitation applies, so a Lao invitation opens and is
+  // sat in Lao without the candidate doing anything. Either way this is
+  // presentation only: the deadline, answers and marking are untouched.
+  const startLanguage = normaliseLanguage(b.language || link.language);
   db.prepare(
     `INSERT INTO assessment_sessions (id, candidate_id, link_id, assessment_id, started_at, duration_minutes,
        expires_at, status, verified, language, pass_threshold, total_max)

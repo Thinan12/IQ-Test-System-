@@ -10,6 +10,7 @@ const { parseDbDate } = require('../../lib/timeutil');
 const bcrypt = require('bcryptjs');
 const { linkLiveStatus, sessionLiveStatus } = require('../../lib/examControl');
 const { deleteCandidateData } = require('../../lib/dataManagement');
+const { normaliseLanguage, isSupportedLanguage, DEFAULT_LANGUAGE } = require('../../lib/questionText');
 const { nextCandidateCode } = require('../../lib/dataManagement');
 const { validateCode } = require('../../lib/candidateCode');
 
@@ -291,6 +292,15 @@ router.post('/:id/links', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (
   // the active, non-archived one. An archived or inactive assessment can never
   // receive a new invitation.
   const requested = (req.body || {}).assessmentId;
+  // Which language the candidate should see. An unsupported value is rejected
+  // rather than quietly turned into English: the admin chose it deliberately
+  // and must be told it did not take.
+  const requestedLanguage = (req.body || {}).language;
+  if (requestedLanguage !== undefined && requestedLanguage !== null && requestedLanguage !== ''
+      && !isSupportedLanguage(requestedLanguage)) {
+    return res.status(400).json({ error: 'Candidate language must be either English (en) or Lao (lo).' });
+  }
+  const language = requestedLanguage ? normaliseLanguage(requestedLanguage) : DEFAULT_LANGUAGE;
   const assessment = requested
     ? db.prepare('SELECT * FROM assessments WHERE id = ?').get(requested)
     : db.prepare(`SELECT * FROM assessments WHERE active = 1 AND COALESCE(archived,0) = 0 ORDER BY created_at LIMIT 1`).get();
@@ -307,13 +317,14 @@ router.post('/:id/links', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'RECRUITER'), (
   const expiryMinutes = assessment ? assessment.link_expiry_minutes : s.link_expiry_minutes;
   const expiresAt = new Date(Date.now() + expiryMinutes * 60000).toISOString();
   db.prepare(
-    `INSERT INTO assessment_links (id, token, candidate_id, assessment_id, status, expires_at, created_by) VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)`
-  ).run(id, token, c.id, assessment ? assessment.id : null, expiresAt, req.user.name);
+    `INSERT INTO assessment_links (id, token, candidate_id, assessment_id, status, expires_at, created_by, language)
+     VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`
+  ).run(id, token, c.id, assessment ? assessment.id : null, expiresAt, req.user.name, language);
   if (c.status === 'DRAFT') db.prepare(`UPDATE candidates SET status = 'INVITED' WHERE id = ?`).run(c.id);
-  auditFromReq(req, 'Assessment link generated', c.code, null, { token: token.slice(0, 8) + '…', expiresAt });
+  auditFromReq(req, 'Assessment link generated', c.code, null, { token: token.slice(0, 8) + '…', expiresAt, language });
   const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
   res.status(201).json({
-    id, token, expiresAt, status: 'ACTIVE',
+    id, token, expiresAt, status: 'ACTIVE', language,
     examUrl: `${baseUrl}/exam/${token}`,
     whatsappMessage: `Dear ${c.full_name},\n\nYou are invited to complete the LALCO recruitment assessment.\n\nAssessment link:\n${baseUrl}/exam/${token}\n\nThis invitation link expires in ${s.link_expiry_minutes} minutes. Please complete the assessment within the allocated assessment time once you begin.\n\nThank you.`,
   });

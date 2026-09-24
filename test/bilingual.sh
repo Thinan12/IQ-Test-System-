@@ -31,6 +31,14 @@ public_json() { # public_json <method> <url> <json>
 
 LAO_Q='ຄຳຖາມພາສາລາວ ສຳລັບການທົດສອບ'
 LAO_LABEL='ດອກເບ້ຍລາຍເດືອນ'
+# Phase 5 fixture: a choice question whose canonical values (A/B) differ from
+# both the English labels (Paris/London) and the Lao ones. That separation is
+# the whole point — the value is graded, the labels are only read.
+LAO_PARIS='ປາຣີ'
+LAO_LONDON='ລອນດອນ'
+LAO_CAPITAL_Q='ເມືອງໃດແມ່ນນະຄອນຫຼວງຂອງຝຣັ່ງ?'
+LAO_CAPITAL_LABEL='ນະຄອນຫຼວງ'
+OPTION_QUESTION='{"type":"CALC","text":"Which city is the capital of France?","textLo":"'"$LAO_CAPITAL_Q"'","translationStatus":"APPROVED","category":"Bilingual Options","config":{"parts":[{"key":"capital","label":"Capital city","marks":2,"type":"choice","options":["A","B"],"optionLabels":{"A":"Paris","B":"London"},"expected":"A"}]},"configLo":{"parts":{"capital":{"label":"'"$LAO_CAPITAL_LABEL"'","options":{"A":"'"$LAO_PARIS"'","B":"'"$LAO_LONDON"'"}}}}}'
 
 # ===========================================================================
 c_head "MIGRATION — the seeded bank survives untouched"
@@ -248,5 +256,188 @@ check "Lao interface strings are supplied" "$([ "$(jsonval "$STRINGS" 'd.supplie
 expect_eq "the three strings confirmed English in production are now Lao" "true"   "$(jsonval "$STRINGS" 'String(d.productionGapsFixed)')"
 printf '  [36mNOTE[0m  Lao supplied: %s | still falling back to English: %s
 '   "$(jsonval "$STRINGS" 'd.supplied')" "$(jsonval "$STRINGS" 'd.pending')"
+
+# ===========================================================================
+# Phase 5 — the admin chooses the candidate's language when generating the
+# invitation, and the exam opens in it with no action from the candidate.
+c_head "INVITATION LANGUAGE — validation at the point of choosing"
+read -r CL CLCODE <<< "$(new_candidate "$HR" "Link Language Candidate")"
+expect_eq "an invitation with no language stated is accepted" 201 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{}')"
+expect_eq "and defaults to English, exactly as before this existed" "en" "$(dbq "SELECT language AS v FROM assessment_links WHERE candidate_id = '$CL' ORDER BY created_at DESC, rowid DESC LIMIT 1")"
+expect_eq "English can be chosen explicitly" 201 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":"en"}')"
+expect_eq "Lao can be chosen explicitly" 201 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":"lo"}')"
+expect_eq "and is stored on the invitation" "lo" "$(dbq "SELECT language AS v FROM assessment_links WHERE candidate_id = '$CL' ORDER BY created_at DESC, rowid DESC LIMIT 1")"
+expect_eq "upper case EN is accepted" 201 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":"EN"}')"
+expect_eq "and normalised to lower case" "en" "$(dbq "SELECT language AS v FROM assessment_links WHERE candidate_id = '$CL' ORDER BY created_at DESC, rowid DESC LIMIT 1")"
+expect_eq "upper case LO is accepted" 201 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":"LO"}')"
+expect_eq "an unsupported language is REJECTED, not silently made English" 400 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":"fr"}')"
+expect_eq "a path-traversal style value is rejected" 400 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":"../../etc/passwd"}')"
+expect_eq "a non-string language is rejected" 400 "$(http_code POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":{"a":1}}')"
+REJ=$(http_body POST "$BASE/api/admin/candidates/$CL/links" "$HR" '{"language":"fr"}')
+expect_contains "the rejection says which languages are supported" "English (en) or Lao (lo)" "$REJ"
+expect_eq "a rejected invitation creates no link row" "lo" "$(dbq "SELECT language AS v FROM assessment_links WHERE candidate_id = '$CL' ORDER BY created_at DESC, rowid DESC LIMIT 1")"
+expect_eq "the chosen language is recorded in the audit trail" 1 "$(dbq "SELECT CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END AS v FROM audit_logs WHERE action = 'Assessment link generated' AND new_value LIKE '%language%lo%'")"
+
+c_head "GENERATED LINK — an English invitation opens in English"
+read -r CEN CENCODE <<< "$(new_candidate "$HR" "English Invitation Candidate")"
+TEN=$(new_link "$HR" "$CEN" en)
+INTRO_EN=$(http_body GET "$BASE/api/exam/$TEN")
+expect_eq "the portal is told the invitation language before any session exists" "en" "$(jsonval "$INTRO_EN" 'd.linkLanguage')"
+START_EN=$(public_json POST "$BASE/api/exam/$TEN/start" "{\"candidateCode\":\"$CENCODE\"}")
+expect_eq "the session starts in English" "en" "$(jsonval "$START_EN" 'd.language')"
+SEN=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$CEN'")
+expect_eq "stored on the session" "en" "$(dbq "SELECT language AS v FROM assessment_sessions WHERE id = '$SEN'")"
+expect_eq "and the questions are served in English" "en" "$(jsonval "$(http_body GET "$BASE/api/exam/$TEN/questions")" 'd.language')"
+
+c_head "GENERATED LINK — a Lao invitation opens in Lao with no candidate action"
+read -r CLO CLOCODE <<< "$(new_candidate "$HR" "Lao Invitation Candidate")"
+TLO=$(new_link "$HR" "$CLO" lo)
+INTRO_LO=$(http_body GET "$BASE/api/exam/$TLO")
+expect_eq "the portal is told the invitation is Lao" "lo" "$(jsonval "$INTRO_LO" 'd.linkLanguage')"
+# The candidate sends NO language: that is the whole point of the feature.
+START_LO=$(public_json POST "$BASE/api/exam/$TLO/start" "{\"candidateCode\":\"$CLOCODE\"}")
+expect_eq "the session starts in Lao without the candidate choosing anything" "lo" "$(jsonval "$START_LO" 'd.language')"
+SLO=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$CLO'")
+expect_eq "stored on the session" "lo" "$(dbq "SELECT language AS v FROM assessment_sessions WHERE id = '$SLO'")"
+expect_eq "questions are served in Lao" "lo" "$(jsonval "$(http_body GET "$BASE/api/exam/$TLO/questions")" 'd.language')"
+expect_eq "RELOAD keeps it Lao - the value comes from the server, not the browser" "lo" "$(jsonval "$(http_body GET "$BASE/api/exam/$TLO")" 'd.session.language')"
+expect_eq "and a second reload still does" "lo" "$(jsonval "$(http_body GET "$BASE/api/exam/$TLO")" 'd.session.language')"
+
+c_head "INVITATION LANGUAGE — a candidate switch never rewrites the invitation"
+LINK_LANG_BEFORE=$(dbq "SELECT language AS v FROM assessment_links WHERE token = '$TLO'")
+public_json POST "$BASE/api/exam/$TLO/language" '{"language":"en"}' > /dev/null
+expect_eq "the SESSION follows the candidate" "en" "$(dbq "SELECT language AS v FROM assessment_sessions WHERE id = '$SLO'")"
+expect_eq "the INVITATION is unchanged - it records what the admin chose" "$LINK_LANG_BEFORE" "$(dbq "SELECT language AS v FROM assessment_links WHERE token = '$TLO'")"
+expect_eq "reload now follows the candidate, not the invitation" "en" "$(jsonval "$(http_body GET "$BASE/api/exam/$TLO")" 'd.session.language')"
+public_json POST "$BASE/api/exam/$TLO/language" '{"language":"lo"}' > /dev/null
+expect_eq "and switching back works" "lo" "$(dbq "SELECT language AS v FROM assessment_sessions WHERE id = '$SLO'")"
+expect_eq "an unsupported language from a candidate falls back safely to English" "en" "$(jsonval "$(public_json POST "$BASE/api/exam/$TLO/language" '{"language":"fr"}')" 'd.language')"
+public_json POST "$BASE/api/exam/$TLO/language" '{"language":"lo"}' > /dev/null
+
+c_head "LINK SAFETY — the token stays opaque and carries no PII"
+for tok in "$TEN" "$TLO"; do
+  check "the exam token is at least 32 characters" "$([ ${#tok} -ge 32 ] && echo 0 || echo 1)" "length=${#tok}"
+  check "the exam token is opaque hex" "$(printf '%s' "$tok" | grep -Eq '^[0-9a-f]+$' && echo 0 || echo 1)" "$tok"
+done
+expect_not_contains "the token does not contain the LALCO ID" "$CLOCODE" "$TLO"
+expect_not_contains "the token does not contain the database id" "$CLO" "$TLO"
+LINK_BODY=$(http_body POST "$BASE/api/admin/candidates/$CLO/links" "$HR" '{"language":"lo"}')
+expect_contains "the admin is told the language that was applied" '"language":"lo"' "$LINK_BODY"
+EXAM_URL=$(jsonval "$LINK_BODY" 'd.examUrl')
+expect_not_contains "the exam URL carries no LALCO ID" "$CLOCODE" "$EXAM_URL"
+expect_not_contains "the exam URL carries no database id" "$CLO" "$EXAM_URL"
+expect_not_contains "the exam URL carries no language query parameter" "lang=" "$EXAM_URL"
+expect_not_contains "the exam URL carries no query string at all" "?" "$EXAM_URL"
+expect_contains "expiry is still returned unchanged" '"expiresAt"' "$LINK_BODY"
+NEWLINK_ID=$(jsonval "$LINK_BODY" 'd.id')
+expect_eq "an invitation with a language can still be revoked" 200 "$(http_code POST "$BASE/api/admin/candidates/links/$NEWLINK_ID/revoke" "$HR")"
+expect_eq "and is revoked" "REVOKED" "$(dbq "SELECT status AS v FROM assessment_links WHERE id = '$NEWLINK_ID'")"
+
+# ===========================================================================
+c_head "BILINGUAL OPTIONS — canonical value, English label, Lao label"
+OPTQ_ID=$(jsonval "$(post_json POST "$BASE/api/admin/questions" "$HR" "$OPTION_QUESTION")" 'd.id')
+check "a question with English AND Lao option labels is created" "$([ -n "$OPTQ_ID" ] && echo 0 || echo 1)"
+expect_eq "it is APPROVED for Lao" "APPROVED" "$(dbq "SELECT translation_status AS v FROM questions WHERE id = '$OPTQ_ID'")"
+ADMINQ=$(http_body GET "$BASE/api/admin/questions/$OPTQ_ID" "$HR")
+expect_contains "the English label survives a save/reload round trip" 'Paris' "$ADMINQ"
+expect_contains "so does the second English label" 'London' "$ADMINQ"
+expect_contains "the expected answer is still the VALUE, not a label" '"expected":"A"' "$ADMINQ"
+expect_contains "the Lao option label survives the round trip" "$LAO_PARIS" "$ADMINQ"
+
+c_head "BILINGUAL OPTIONS — validation refuses anything that could change a mark"
+expect_eq "an English label for an option that does not exist is rejected" 400 "$(post_json_code POST "$BASE/api/admin/questions" "$HR" '{"type":"CALC","text":"x","config":{"parts":[{"key":"a","label":"A","marks":1,"type":"choice","options":["A","B"],"optionLabels":{"C":"Nope"},"expected":"A"}]}}')"
+expect_eq "a non-text English label is rejected" 400 "$(post_json_code POST "$BASE/api/admin/questions" "$HR" '{"type":"CALC","text":"x","config":{"parts":[{"key":"a","label":"A","marks":1,"type":"choice","options":["A","B"],"optionLabels":{"A":5},"expected":"A"}]}}')"
+expect_eq "English labels on a numeric part are rejected" 400 "$(post_json_code POST "$BASE/api/admin/questions" "$HR" '{"type":"CALC","text":"x","config":{"parts":[{"key":"a","label":"A","marks":1,"expected":1,"optionLabels":{"A":"x"}}]}}')"
+expect_eq "an array instead of an object is rejected" 400 "$(post_json_code POST "$BASE/api/admin/questions" "$HR" '{"type":"CALC","text":"x","config":{"parts":[{"key":"a","label":"A","marks":1,"type":"choice","options":["A","B"],"optionLabels":["A"],"expected":"A"}]}}')"
+
+c_head "BILINGUAL OPTIONS — what the candidate actually receives"
+OPT_ASMT=$(dbq "SELECT assessment_id AS v FROM assessment_links WHERE token = '$TEN'")
+check "the invitation resolves to an assessment" "$([ -n "$OPT_ASMT" ] && echo 0 || echo 1)" "OPT_ASMT='$OPT_ASMT'"
+OPT_QIDS=$(dbq "SELECT '[\"' || REPLACE(GROUP_CONCAT(question_id), ',', '\",\"') || '\"]' AS v FROM (SELECT aq.question_id FROM assessment_questions aq JOIN questions q ON q.id = aq.question_id WHERE aq.assessment_id = '$OPT_ASMT' AND COALESCE(q.archived,0) = 0 ORDER BY aq.order_index)")
+check "its current question list could be read" "$(printf '%s' "$OPT_QIDS" | grep -q '^\[' && echo 0 || echo 1)" "OPT_QIDS='$OPT_QIDS'"
+ATTACH=$(post_json PATCH "$BASE/api/admin/assessments/$OPT_ASMT" "$HR" "{\"questionIds\": $(printf '%s' "$OPT_QIDS" | sed "s/]$/,\"$OPTQ_ID\"]/")}")
+expect_eq "the question is attached to the assessment being sat" 1 "$(dbq "SELECT COUNT(*) AS v FROM assessment_questions WHERE assessment_id = '$OPT_ASMT' AND question_id = '$OPTQ_ID'")"
+check "the attach call reported success" "$(printf '%s' "$ATTACH" | grep -q '"ok"\|"id"' && echo 0 || echo 1)" "$(printf '%s' "$ATTACH" | head -c 200)"
+
+ENQ=$(jsonval "$(http_body GET "$BASE/api/exam/$TEN/questions")" "JSON.stringify((d.questions.filter(q=>q.id==='$OPTQ_ID')[0]||{}).parts||[])")
+expect_contains "[en] the option keeps its canonical value" '"value":"A"' "$ENQ"
+expect_contains "[en] and shows the ENGLISH label, not the raw value" '"label":"Paris"' "$ENQ"
+expect_contains "[en] the second option too" '"label":"London"' "$ENQ"
+expect_not_contains "[en] no expected answer reaches the candidate" 'expected' "$ENQ"
+
+public_json POST "$BASE/api/exam/$TEN/language" '{"language":"lo"}' > /dev/null
+LOQ=$(jsonval "$(http_body GET "$BASE/api/exam/$TEN/questions")" "JSON.stringify((d.questions.filter(q=>q.id==='$OPTQ_ID')[0]||{}).parts||[])")
+expect_contains "[lo] the option keeps the SAME canonical value" '"value":"A"' "$LOQ"
+expect_contains "[lo] and shows the Lao label" "$LAO_PARIS" "$LOQ"
+expect_not_contains "[lo] the English label is not shown alongside it" '"label":"Paris"' "$LOQ"
+expect_not_contains "[lo] no expected answer reaches the candidate" 'expected' "$LOQ"
+expect_eq "[lo] the canonical values are identical in both languages" "$(printf '%s' "$ENQ" | grep -o '"value":"[AB]"' | tr '\n' ',')" "$(printf '%s' "$LOQ" | grep -o '"value":"[AB]"' | tr '\n' ',')"
+
+c_head "BILINGUAL OPTIONS — answering in Lao stores the canonical value"
+public_json POST "$BASE/api/exam/$TEN/answer" "{\"questionId\":\"$OPTQ_ID\",\"answer\":{\"capital\":\"A\"},\"timeSpentDeltaSeconds\":5}" > /dev/null
+expect_eq "the stored answer is the canonical value, not the Lao label" "A" "$(dbq "SELECT json_extract(answer_json,'\$.capital') AS v FROM candidate_answers WHERE session_id = '$SEN' AND question_id = '$OPTQ_ID'")"
+expect_eq "no Lao text was written into the stored answer" 0 "$(dbq "SELECT COUNT(*) AS v FROM candidate_answers WHERE session_id = '$SEN' AND question_id = '$OPTQ_ID' AND LENGTH(answer_json) > 40")"
+expect_contains "the question list reports it as answered" "$OPTQ_ID" "$(jsonval "$(http_body GET "$BASE/api/exam/$TEN/questions")" 'd.answered.join(",")')"
+ECHOED=$(jsonval "$(http_body GET "$BASE/api/exam/$TEN/question/$OPTQ_ID")" 'JSON.stringify(d.savedAnswer)')
+expect_contains "reloading in Lao echoes the saved answer so the option stays selected" '"capital":"A"' "$ECHOED"
+expect_contains "and the question still renders in Lao around it" "$LAO_PARIS" "$(http_body GET "$BASE/api/exam/$TEN/question/$OPTQ_ID")"
+public_json POST "$BASE/api/exam/$TEN/language" '{"language":"en"}' > /dev/null
+ECHOED_EN=$(jsonval "$(http_body GET "$BASE/api/exam/$TEN/question/$OPTQ_ID")" 'JSON.stringify(d.savedAnswer)')
+expect_contains "and it survives switching back to English" '"capital":"A"' "$ECHOED_EN"
+expect_contains "with the English label shown again" 'Paris' "$(http_body GET "$BASE/api/exam/$TEN/question/$OPTQ_ID")"
+
+c_head "SCORE PARITY — the language a candidate sits in cannot change a mark"
+read -r PA PACODE <<< "$(new_candidate "$HR" "Parity English")"
+read -r PB PBCODE <<< "$(new_candidate "$HR" "Parity Lao")"
+TPA=$(new_link "$HR" "$PA" en)
+TPB=$(new_link "$HR" "$PB" lo)
+take_assessment "$TPA" "$PACODE" correct > /dev/null
+take_assessment "$TPB" "$PBCODE" correct > /dev/null
+SPA=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$PA'")
+SPB=$(dbq "SELECT id AS v FROM assessment_sessions WHERE candidate_id = '$PB'")
+expect_eq "the English candidate sat in English" "en" "$(dbq "SELECT language AS v FROM assessment_sessions WHERE id = '$SPA'")"
+expect_eq "the Lao candidate sat in Lao, chosen by the invitation alone" "lo" "$(dbq "SELECT language AS v FROM assessment_sessions WHERE id = '$SPB'")"
+expect_eq "both submitted" 2 "$(dbq "SELECT COUNT(*) AS v FROM assessment_sessions WHERE id IN ('$SPA','$SPB') AND status = 'SUBMITTED'")"
+MARKS_EN=$(dbq "SELECT CAST(calc_marks AS INT) AS v FROM scores WHERE session_id = '$SPA'")
+MARKS_LO=$(dbq "SELECT CAST(calc_marks AS INT) AS v FROM scores WHERE session_id = '$SPB'")
+expect_eq "calculation marks are IDENTICAL across languages" "$MARKS_EN" "$MARKS_LO"
+check "and are not accidentally zero for both" "$([ -n "$MARKS_EN" ] && [ "$MARKS_EN" -gt 0 ] && echo 0 || echo 1)" "en=$MARKS_EN lo=$MARKS_LO"
+expect_eq "the maximum available is identical too" "$(dbq "SELECT CAST(calc_max AS INT) AS v FROM scores WHERE session_id = '$SPA'")" "$(dbq "SELECT CAST(calc_max AS INT) AS v FROM scores WHERE session_id = '$SPB'")"
+expect_eq "the scoring snapshot is identical too" "$(dbq "SELECT total_max AS v FROM assessment_sessions WHERE id = '$SPA'")" "$(dbq "SELECT total_max AS v FROM assessment_sessions WHERE id = '$SPB'")"
+expect_eq "and the pass threshold is identical" "$(dbq "SELECT pass_threshold AS v FROM assessment_sessions WHERE id = '$SPA'")" "$(dbq "SELECT pass_threshold AS v FROM assessment_sessions WHERE id = '$SPB'")"
+
+c_head "TRANSLATION COMPLETENESS — reported to admins, never invented"
+FULL=$(http_body GET "$BASE/api/admin/questions/$OPTQ_ID" "$HR")
+expect_eq "a fully translated question reports complete" "true" "$(jsonval "$FULL" 'String(d.question.laoComplete)')"
+expect_eq "with no missing stem" "false" "$(jsonval "$FULL" 'String(d.question.laoGaps.text)')"
+expect_eq "no missing step wording" 0 "$(jsonval "$FULL" 'd.question.laoGaps.parts.length')"
+expect_eq "and no missing option labels" 0 "$(jsonval "$FULL" 'd.question.laoGaps.options.length')"
+# Remove one Lao option label: the gap must be reported, not silently filled.
+post_json PATCH "$BASE/api/admin/questions/$OPTQ_ID" "$HR" "{\"configLo\":{\"parts\":{\"capital\":{\"label\":\"$LAO_CAPITAL_LABEL\",\"options\":{\"A\":\"$LAO_PARIS\"}}}}}" > /dev/null
+PARTIAL=$(http_body GET "$BASE/api/admin/questions/$OPTQ_ID" "$HR")
+expect_eq "dropping one Lao option label makes it incomplete" "false" "$(jsonval "$PARTIAL" 'String(d.question.laoComplete)')"
+expect_eq "and the missing option is named" 1 "$(jsonval "$PARTIAL" 'd.question.laoGaps.options.length')"
+expect_eq "by its canonical value" "B" "$(jsonval "$PARTIAL" 'd.question.laoGaps.options[0].value')"
+expect_eq "the question is still APPROVED — a gap is not an error" "APPROVED" "$(dbq "SELECT translation_status AS v FROM questions WHERE id = '$OPTQ_ID'")"
+LOQ2=$(jsonval "$(public_json POST "$BASE/api/exam/$TEN/language" '{"language":"lo"}' > /dev/null; http_body GET "$BASE/api/exam/$TEN/questions")" "JSON.stringify((d.questions.filter(q=>q.id==='$OPTQ_ID')[0]||{}).parts||[])")
+expect_contains "the translated option still shows Lao" "$LAO_PARIS" "$LOQ2"
+expect_contains "the untranslated one falls back to its ENGLISH label, not blank" '"label":"London"' "$LOQ2"
+expect_contains "and its canonical value is unchanged" '"value":"B"' "$LOQ2"
+expect_not_contains "no Lao was invented for the untranslated option" "$LAO_LONDON" "$LOQ2"
+# Put it back so later assertions see the complete question.
+post_json PATCH "$BASE/api/admin/questions/$OPTQ_ID" "$HR" "{\"configLo\":{\"parts\":{\"capital\":{\"label\":\"$LAO_CAPITAL_LABEL\",\"options\":{\"A\":\"$LAO_PARIS\",\"B\":\"$LAO_LONDON\"}}}}}" > /dev/null
+expect_eq "restoring the label makes it complete again" "true" "$(jsonval "$(http_body GET "$BASE/api/admin/questions/$OPTQ_ID" "$HR")" 'String(d.question.laoComplete)')"
+ENONLY_GAPS=$(http_body GET "$BASE/api/admin/questions" "$HR")
+expect_contains "the bank listing carries the same signal" 'laoComplete' "$ENONLY_GAPS"
+public_json POST "$BASE/api/exam/$TEN/language" '{"language":"en"}' > /dev/null
+
+c_head "ENGLISH-ONLY QUESTIONS — untouched by any of this"
+ENONLY=$(jsonval "$(post_json POST "$BASE/api/admin/questions" "$HR" '{"type":"CALC","text":"English only question","config":{"parts":[{"key":"a","label":"Answer","marks":3,"expected":42,"tol":0}]}}')" 'd.id')
+check "an English-only question is still accepted" "$([ -n "$ENONLY" ] && echo 0 || echo 1)"
+expect_eq "its translation status is MISSING, not invented" "MISSING" "$(dbq "SELECT translation_status AS v FROM questions WHERE id = '$ENONLY'")"
+expect_eq "no Lao text was fabricated for it" "" "$(dbq "SELECT COALESCE(text_lo,'') AS v FROM questions WHERE id = '$ENONLY'")"
+expect_eq "and no Lao config overlay was fabricated" "" "$(dbq "SELECT COALESCE(config_lo_json,'') AS v FROM questions WHERE id = '$ENONLY'")"
+expect_eq "no question is MISSING a translation yet carries Lao text" 0 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE translation_status = 'MISSING' AND COALESCE(TRIM(text_lo),'') <> ''")"
+expect_eq "and no question carries a Lao overlay without Lao text" 0 "$(dbq "SELECT COUNT(*) AS v FROM questions WHERE COALESCE(TRIM(text_lo),'') = '' AND COALESCE(config_lo_json,'') <> ''")"
 
 summary "BILINGUAL QUESTION BANK + LANGUAGE SWITCH"

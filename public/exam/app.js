@@ -284,6 +284,13 @@ async function boot() {
     STATE.candidateName = info.candidateName || null;
     STATE.candidateCode = info.candidateCode || null;
     STATE.assessmentName = info.assessmentName || null;
+    // Which language this candidate sees, decided before anything renders so
+    // the very first screen is already right and nothing flashes in English.
+    // A live session's own stored language wins — it is what the candidate
+    // last chose. Otherwise the language the admin picked when generating the
+    // invitation applies, so a Lao link opens in Lao with no action needed.
+    // This survives reload and resume because both values come from the server.
+    STATE.language = (info.session && info.session.language) || info.linkLanguage || STATE.language;
     if (info.session && info.session.status === 'AUTO_SUBMITTED') return renderTimeExpired(info.session);
     if (info.session && info.session.status === 'TERMINATED') return renderTerminated(info.session);
     if (info.session && (info.session.status === 'PAUSED' || info.session.paused)) return renderPaused(info.session);

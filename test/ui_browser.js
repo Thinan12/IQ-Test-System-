@@ -288,7 +288,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.selectOption('#qStatus', 'APPROVED');
     await page.fill('#qCategory', 'Browser Test');
     await page.fill('#qConfig', JSON.stringify({ parts: [{ key: 'answer', label: 'Answer (USD)', marks: 5, expected: 100, tol: 1 }] }, null, 2));
-    await page.fill('#qConfigLo', JSON.stringify({ parts: { answer: { label: 'ຄຳຕອບ (USD)' } } }, null, 2));
+    // The Lao wording is typed into the structured panel, which is rebuilt from
+    // the marking configuration above. Dispatch the change the panel listens for.
+    await page.dispatchEvent('#qConfig', 'change');
+    await page.waitForSelector('.qPartLo[data-part="answer"]', { timeout: 10000 });
+    check(await page.locator('.qPartEn[data-part="answer"]').inputValue() === 'Answer (USD)',
+      'the bilingual panel picked the English wording up from the configuration');
+    check(await page.locator('.biltag.en').count() > 0, 'the panel marks which field is English');
+    check(await page.locator('.biltag.lo').count() > 0, 'and which field is Lao');
+    await page.fill('.qPartLo[data-part="answer"]', 'ຄຳຕອບ (USD)');
+    // Regression: clicking from the configuration straight into a Lao field
+    // used to rebuild the panel mid-click, so the keystrokes landed back in the
+    // textarea and corrupted the JSON. Both must survive.
+    check(await page.locator('.qPartLo[data-part="answer"]').inputValue() === 'ຄຳຕອບ (USD)',
+      'typing Lao straight after editing the configuration is not lost',
+      await page.locator('.qPartLo[data-part="answer"]').inputValue());
+    const cfgAfter = await page.locator('#qConfig').inputValue();
+    let cfgValid = true;
+    try { JSON.parse(cfgAfter); } catch (e) { cfgValid = false; }
+    check(cfgValid, 'and the marking configuration is still valid JSON', cfgAfter.slice(-40));
     await page.click('#qSave');
     await page.waitForTimeout(1800);
 
@@ -732,6 +750,154 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check(!(await dp.locator('#printReceipt').isVisible()), 'which is hidden on the printed page');
     check(await dp.locator('#receipt').isVisible(), 'while the confirmation itself prints');
     await doneCtx.close();
+
+    // ------------- Bilingual OPTIONS built through the structured editor
+    // The canonical value is what grading compares against. The point of this
+    // block is that it survives being given two different display labels.
+    head('Question Bank \u2014 bilingual options: value, English label, Lao label');
+    await page.click('.sidebar-nav a[data-nav="questions"]');
+    await page.waitForSelector('#newQBtn', { timeout: 10000 });
+    await page.click('#newQBtn');
+    await page.waitForSelector('#qText');
+    await page.fill('#qText', 'Browser choice question: which city is the capital of France?');
+    await page.fill('#qTextLo', '\u0ec0\u0ea1\u0eb7\u0ead\u0e87\u0ec3\u0e94\u0ec1\u0ea1\u0ec8\u0e99\u0e99\u0eb0\u0e84\u0ead\u0e99\u0eab\u0ebc\u0ea7\u0e87?');
+    await page.selectOption('#qStatus', 'APPROVED');
+    await page.fill('#qCategory', 'Browser Choice');
+    await page.fill('#qConfig', JSON.stringify({
+      parts: [{ key: 'capital', label: 'Capital city', marks: 4, type: 'choice', options: ['A', 'B'], expected: 'A' }],
+    }, null, 2));
+    await page.dispatchEvent('#qConfig', 'change');
+    await page.waitForSelector('.qOptEn[data-value="A"]', { timeout: 10000 });
+
+    const canonCells = await page.locator('.optgrid td.canon').allInnerTexts();
+    check(canonCells.map((x) => x.trim()).join(',') === 'A,B',
+      'the canonical values are shown read-only, one row each', canonCells.join(','));
+    check(await page.locator('.optgrid td.canon input').count() === 0,
+      'and there is no input on the canonical value \u2014 it cannot be edited here');
+
+    await page.fill('.qOptEn[data-value="A"]', 'Paris');
+    await page.fill('.qOptEn[data-value="B"]', 'London');
+    await page.fill('.qOptLo[data-value="A"]', '\u0e9b\u0eb2\u0ea3\u0eb5');
+    await page.fill('.qOptLo[data-value="B"]', '\u0ea5\u0ead\u0e99\u0e94\u0ead\u0e99');
+    await page.fill('.qPartLo[data-part="capital"]', '\u0e99\u0eb0\u0e84\u0ead\u0e99\u0eab\u0ebc\u0ea7\u0e87');
+    await page.click('#qSave');
+    await page.waitForTimeout(1800);
+
+    const choiceQ = db.prepare("SELECT * FROM questions WHERE category = 'Browser Choice'").get();
+    check(!!choiceQ, 'the choice question was created through the UI');
+    const choiceCfg = choiceQ ? JSON.parse(choiceQ.config_json) : { parts: [] };
+    const choicePart = choiceCfg.parts[0] || {};
+    check(JSON.stringify(choicePart.options) === '["A","B"]',
+      'the canonical values were stored unchanged', JSON.stringify(choicePart.options));
+    check(choicePart.expected === 'A', 'the expected answer is still the VALUE, not a label', String(choicePart.expected));
+    check(choicePart.optionLabels && choicePart.optionLabels.A === 'Paris',
+      'the English label was stored against the value', JSON.stringify(choicePart.optionLabels));
+    const choiceLo = choiceQ && choiceQ.config_lo_json ? JSON.parse(choiceQ.config_lo_json) : { parts: {} };
+    check(!!(choiceLo.parts && choiceLo.parts.capital && choiceLo.parts.capital.options
+      && choiceLo.parts.capital.options.A === '\u0e9b\u0eb2\u0ea3\u0eb5'),
+      'the Lao label was stored as an overlay keyed by the same value',
+      JSON.stringify(choiceLo.parts && choiceLo.parts.capital));
+    check(choiceQ && choiceQ.translation_status === 'APPROVED', 'and it is approved for Lao');
+
+    // Reopening must show what was saved, in both columns.
+    await page.click('.sidebar-nav a[data-nav="questions"]');
+    await page.waitForSelector('#qBody', { timeout: 10000 });
+    const editBtn = page.locator(`button[data-qact="edit"][data-qid="${choiceQ.id}"]`);
+    if (await editBtn.count()) {
+      await editBtn.first().click();
+      await page.waitForSelector('.qOptEn[data-value="A"]', { timeout: 10000 });
+      check(await page.locator('.qOptEn[data-value="A"]').inputValue() === 'Paris',
+        'reopening the question shows the saved English label');
+      check(await page.locator('.qOptLo[data-value="A"]').inputValue() === '\u0e9b\u0eb2\u0ea3\u0eb5',
+        'and the saved Lao label');
+      check((await page.locator('.optgrid td.canon').allInnerTexts()).map((x) => x.trim()).join(',') === 'A,B',
+        'and the canonical values are unchanged after a round trip');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+    } else {
+      check(false, 'the saved question offers an Edit control');
+    }
+
+    // ------------------- Invitation language chosen by the admin, in the UI
+    head('Invitation language \u2014 admin picks Lao, the exam opens in Lao');
+    const invCand = await page.evaluate(async () => {
+      const r = await api('/candidates', { method: 'POST', body: JSON.stringify({ fullName: 'Invitation Language Browser', applicationType: 'NORMAL', iq: 115, education: 'Bachelor Degree' }) });
+      return { id: r.id, code: r.code };
+    });
+    await page.goto(`${BASE}/admin/#/candidates/${invCand.id}`, { waitUntil: 'networkidle' });
+    // The link card lives on the Assessment tab, not the profile's default tab.
+    await page.waitForSelector('#profTabs', { timeout: 15000 });
+    await page.click('#profTabs button[data-t="assessment"]');
+    await page.waitForSelector('#genLink', { timeout: 15000 });
+    check(await page.locator('#linkLang').count() > 0, 'the link card offers a candidate language choice');
+    check(await page.locator('#linkLangEn').isChecked(), 'English is selected by default');
+
+    await page.check('#linkLangLo');
+    await page.click('#genLink');
+    await page.waitForTimeout(1800);
+    const laoLink = db.prepare("SELECT * FROM assessment_links WHERE candidate_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(invCand.id);
+    check(!!laoLink, 'a link was generated from the UI');
+    check(laoLink && laoLink.language === 'lo', 'and it recorded the Lao choice', laoLink && laoLink.language);
+    const linkCard = await page.locator('.card').first().innerText();
+    check(/Lao/.test(linkCard), 'the admin can see which language the active link uses');
+
+    // The candidate opens it: no switching, no manual translation.
+    const invCtx = await browser.newContext();
+    const invPage = await invCtx.newPage();
+    await invPage.goto(`${BASE}/exam/${laoLink.token}`, { waitUntil: 'networkidle' });
+    await invPage.waitForTimeout(700);
+    const invIntro = await invPage.locator('.pbody').innerText();
+    check(/[\u0E80-\u0EFF]/.test(invIntro), 'the invitation screen opens in Lao with no candidate action');
+    const invActive = await invPage.locator('#langSwitch .langbtn.active').innerText();
+    check(/[\u0E80-\u0EFF]/.test(invActive), 'and the Lao button is the one shown as active', JSON.stringify(invActive));
+
+    await invPage.fill('#vCode', invCand.code);
+    await invPage.check('#ack');
+    await invPage.click('#startBtn');
+    await invPage.waitForSelector('#nextBtn', { timeout: 20000 });
+    const invSession = db.prepare('SELECT * FROM assessment_sessions WHERE candidate_id = ?').get(invCand.id);
+    check(invSession && invSession.language === 'lo',
+      'the session was created in Lao from the invitation alone', invSession && invSession.language);
+
+    // Reload must not lose it.
+    await invPage.reload({ waitUntil: 'networkidle' });
+    await invPage.waitForSelector('#nextBtn', { timeout: 20000 });
+    check(/[\u0E80-\u0EFF]/.test(await invPage.locator('#nextBtn').innerText()),
+      'reloading keeps the exam in Lao');
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', invSession.id) === 'lo',
+      'and the stored language is still Lao after the reload');
+
+    // Answer something, then switch language twice: the answer must survive.
+    const invNums = await invPage.$$('input[type="number"]');
+    if (invNums.length) { await invNums[0].fill('4321'); await invPage.waitForTimeout(1600); }
+    const answeredBefore = one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND answer_json IS NOT NULL', invSession.id);
+    check(answeredBefore > 0, 'an answer was saved while in Lao');
+    const invDeadlineBefore = one('SELECT expires_at FROM assessment_sessions WHERE id = ?', invSession.id);
+
+    await invPage.click('#langSwitch [data-lang="en"]');
+    await invPage.waitForTimeout(900);
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', invSession.id) === 'en',
+      'switching to English in the browser is persisted');
+    const numsEn = await invPage.$$('input[type="number"]');
+    check(numsEn.length > 0 && (await numsEn[0].inputValue()) === '4321',
+      'the answer typed in Lao is still on screen in English',
+      numsEn.length ? await numsEn[0].inputValue() : 'no field');
+
+    await invPage.click('#langSwitch [data-lang="lo"]');
+    await invPage.waitForTimeout(900);
+    check(one('SELECT language FROM assessment_sessions WHERE id = ?', invSession.id) === 'lo',
+      'and switching back to Lao is persisted');
+    const numsLo = await invPage.$$('input[type="number"]');
+    check(numsLo.length > 0 && (await numsLo[0].inputValue()) === '4321',
+      'the answer is still there after switching back',
+      numsLo.length ? await numsLo[0].inputValue() : 'no field');
+    check(one('SELECT COUNT(*) FROM candidate_answers WHERE session_id = ? AND answer_json IS NOT NULL', invSession.id) === answeredBefore,
+      'no answer was lost by switching language twice');
+    check(one('SELECT expires_at FROM assessment_sessions WHERE id = ?', invSession.id) === invDeadlineBefore,
+      'and the deadline never moved');
+    check(one('SELECT COUNT(*) FROM assessment_sessions WHERE candidate_id = ?', invCand.id) === 1,
+      'switching language never started a second attempt');
+    await invCtx.close();
 
     // ------------------------ Lao end to end: sit, submit and print in Lao
     // The production smoke test could not prove this: that candidate switched

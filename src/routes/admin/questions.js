@@ -3,7 +3,7 @@ const db = require('../../db');
 const { generateId } = require('../../lib/tokens');
 const { auditFromReq } = require('../../lib/audit');
 const { requireAuth, requireRole } = require('../../middleware/auth');
-const { validateLaoOverlay, resolveTranslationStatus, STATUSES } = require('../../lib/questionText');
+const { validateLaoOverlay, resolveTranslationStatus, STATUSES, laoGaps, laoIsComplete } = require('../../lib/questionText');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -65,7 +65,28 @@ function validateQuestionPayload(body, { partial = false, existing = null } = {}
               // The correct answer must be one of the options that exist.
               errors.push(`${where}: the correct answer must be one of its options.`);
             }
+            // Optional ENGLISH display labels, keyed by canonical value. The
+            // value stays what grading compares against, so relabelling an
+            // option can never change a mark or invalidate a saved answer.
+            if (p.optionLabels !== undefined && p.optionLabels !== null) {
+              if (typeof p.optionLabels !== 'object' || Array.isArray(p.optionLabels)) {
+                errors.push(`${where}: optionLabels must be an object keyed by the canonical option value.`);
+              } else {
+                const allowed = Array.isArray(p.options) ? p.options : [];
+                Object.keys(p.optionLabels).forEach((value) => {
+                  if (!allowed.includes(value)) {
+                    errors.push(`${where}: English label refers to option "${value}", which is not one of its options.`);
+                  }
+                  if (typeof p.optionLabels[value] !== 'string') {
+                    errors.push(`${where}: English label for option "${value}" must be text.`);
+                  }
+                });
+              }
+            }
           } else {
+            if (p.optionLabels !== undefined && p.optionLabels !== null) {
+              errors.push(`${where}: optionLabels only apply to a choice part.`);
+            }
             if (p.expected === undefined || p.expected === null || !Number.isFinite(Number(p.expected))) {
               errors.push(`${where}: a numeric part needs a numeric expected answer.`);
             }
@@ -114,6 +135,11 @@ function adminQuestion(q) {
     configLo: q.config_lo_json ? JSON.parse(q.config_lo_json) : null,
     archived: !!q.archived,
     translationStatus: q.translation_status || 'MISSING',
+    // What a Lao candidate would still read in English. Reported, never
+    // enforced: the English fallback is deliberate and beats a guess. It is
+    // here so an admin can see the gaps before approving, not afterwards.
+    laoGaps: laoGaps(q),
+    laoComplete: laoIsComplete(q),
     // Which assessments actually ask this question. A question nobody has
     // added to an assessment is never served to a candidate, so this is the
     // difference between written and in use.

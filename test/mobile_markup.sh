@@ -15,6 +15,8 @@ HR=$(login_token hradmin@lalco.demo "$DEMO_PASSWORD")
 
 EXAM_HTML=$(cat public/exam/index.html)
 EXAM_JS=$(cat public/exam/app.js)
+ADMIN_HTML=$(cat public/admin/index.html)
+ADMIN_JS=$(cat public/admin/app.js)
 CSS=$(cat public/shared.css)
 
 c_head "Viewport and layout"
@@ -79,6 +81,15 @@ expect_contains "submission succeeds" '"ok":true' "$SUBMIT"
 expect_contains "submission returns a confirmation timestamp" 'submittedAt' "$SUBMIT"
 expect_contains "a confirmation screen exists in the portal" "Assessment submitted" "$EXAM_JS"
 expect_eq "a resubmit from a flaky mobile connection is rejected" 409 "$(http_code POST "$BASE/api/exam/$M_TOKEN/submit")"
+
+c_head "Bilingual admin controls on a tablet"
+expect_contains "the candidate language picker rows are finger-sized" '.langopt{display:flex; align-items:center; gap:8px; min-height:44px;' "$ADMIN_HTML"
+expect_contains "the whole language row is tappable, not just the dot" '<label class="langopt"><input type="radio"' "$ADMIN_JS"
+expect_contains "the language picker wraps rather than overflowing" '.langpick{display:flex; gap:10px; flex-wrap:wrap;}' "$ADMIN_HTML"
+expect_contains "the English/Lao pair stacks on a narrow screen" '.bilrow{grid-template-columns:1fr;}' "$ADMIN_HTML"
+expect_contains "option label inputs are tall enough to tap" '.optgrid input{width:100%; min-height:36px;}' "$ADMIN_HTML"
+expect_contains "the language choice is exposed to assistive technology" 'role="radiogroup"' "$ADMIN_JS"
+expect_contains "and the group is labelled" 'aria-label="Candidate language"' "$ADMIN_JS"
 
 c_head "Reminder"
 printf '  \033[33mNOTE\033[0m  Real-device testing is still required: run MOBILE_TEST_CHECKLIST.md\n'

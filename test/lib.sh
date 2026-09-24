@@ -148,9 +148,12 @@ new_candidate() {
   printf '%s %s' "$(jsonval "$body" 'd.id')" "$(jsonval "$body" 'd.code')"
 }
 
-# new_link <admin-token> <candidate-id> -> echoes the exam token
+# new_link <admin-token> <candidate-id> [language] -> echoes the exam token
+# Omitting the language exercises the default path, which must stay English.
 new_link() {
-  jsonval "$(http_body POST "$BASE/api/admin/candidates/$2/links" "$1")" 'd.token'
+  local body=''
+  [ -n "$3" ] && body="{\"language\":\"$3\"}"
+  jsonval "$(http_body POST "$BASE/api/admin/candidates/$2/links" "$1" "$body")" 'd.token'
 }
 
 # Lifecycle ----------------------------------------------------------------
