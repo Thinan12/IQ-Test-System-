@@ -16,6 +16,22 @@ const { validateSelection } = require('../../lib/questionSelection');
 const ctl = require('../../lib/examControl');
 
 const router = express.Router();
+
+function ensureSimpleColumns() {
+  const ensure = (table, column, definition) => {
+    const cols = db.prepare('PRAGMA table_info(' + table + ')').all();
+    if (!cols.some((x) => x.name === column)) db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition);
+  };
+  ensure('assessment_links', 'assessment_id', 'TEXT');
+  ensure('assessment_links', 'self_registration', 'INTEGER NOT NULL DEFAULT 0');
+  ensure('assessments', 'assessment_type', "TEXT NOT NULL DEFAULT 'GENERAL_ASSESSMENT'");
+  ensure('assessments', 'randomize_questions', 'INTEGER NOT NULL DEFAULT 0');
+  ensure('assessments', 'questions_to_show', 'INTEGER');
+  ensure('assessments', 'randomize_question_order', 'INTEGER NOT NULL DEFAULT 0');
+  ensure('assessments', 'randomize_options', 'INTEGER NOT NULL DEFAULT 0');
+  ensure('candidates', 'id_number', 'TEXT');
+}
+ensureSimpleColumns();
 router.use(requireAuth);
 const EDITORS = ['SUPER_ADMIN', 'HR_ADMIN'];
 const VIEWERS = ['SUPER_ADMIN', 'HR_ADMIN', 'MANAGER', 'EVALUATOR', 'RECRUITER'];
@@ -250,7 +266,7 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
   const linkExpiry = Math.max(1, Math.min(Number(b.linkExpiryMinutes) || 1440, 10080));
   const passMark = Math.max(0, Math.min(Number(b.passMark) || Math.ceil(count * 0.6), count));
   const assessmentId = generateId('asmt');
-  const assessmentName = family === 'IQ' ? `IQ Test ${new Date().toISOString().replace(/[:.]/g,'-')}` : `Assessment ${new Date().toISOString().replace(/[:.]/g,'-')}`;
+  const assessmentName = (family === 'IQ' ? 'IQ Test ' : 'Assessment ') + generateId('simple').slice(-12);
   const candidateId = generateId('cand');
   const code = nextCandidateCode('LALCO');
   const linkId = generateId('link');
@@ -293,7 +309,7 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
     console.error('[simple-link] failed to create candidate link:', e);
     return res.status(500).json({ error: e && e.message ? e.message : 'Could not create candidate link.' });
   }
-  auditFromReq(req, 'SIMPLE_ASSESSMENT_LINK_CREATED', assessmentId, null, { family, count, duration, linkExpiry, passMark });
+  try { auditFromReq(req, 'SIMPLE_ASSESSMENT_LINK_CREATED', assessmentId, null, { family, count, duration, linkExpiry, passMark }); } catch (e) { console.error('[simple-link] audit failed:', e); }
   const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
   const examPath = family === 'IQ' ? 'simple/iq' : 'simple/test';
   res.status(201).json({
