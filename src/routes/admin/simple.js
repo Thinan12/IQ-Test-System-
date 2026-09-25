@@ -259,8 +259,9 @@ router.post('/import', requireRole(...EDITORS), async (req, res) => {
 router.post('/link', requireRole(...EDITORS), (req, res) => {
   const b = req.body || {};
   const family = String(b.type || 'IQ').toUpperCase() === 'GENERAL' ? 'GENERAL' : 'IQ';
-  const pool = db.prepare("SELECT id FROM questions WHERE question_family=? AND active=1 AND COALESCE(archived,0)=0 ORDER BY RANDOM()").all(family);
+  const pool = db.prepare("SELECT id,max_marks FROM questions WHERE question_family=? AND active=1 AND COALESCE(archived,0)=0 ORDER BY RANDOM()").all(family);
   if (!pool.length) return res.status(409).json({ error: 'No questions are available. Upload questions first.' });
+
   const count = Math.max(1, Math.min(Number(b.questions) || pool.length, pool.length));
   const duration = Math.max(1, Math.min(Number(b.durationMinutes) || 30, 600));
   const linkExpiry = Math.max(1, Math.min(Number(b.linkExpiryMinutes) || 1440, 10080));
@@ -272,52 +273,63 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
   const linkId = generateId('link');
   const token = generateSecureToken();
   const expiresAt = new Date(Date.now() + linkExpiry * 60000).toISOString();
-  const questionIds = pool.slice(0, count).map((q) => q.id);
-  const totalMax = family === 'IQ'
-    ? questionIds.reduce((sum, id) => sum + Number(db.prepare('SELECT max_marks FROM questions WHERE id=?').get(id).max_marks || 1), 0)
-    : questionIds.reduce((sum, id) => sum + Number(db.prepare('SELECT max_marks FROM questions WHERE id=?').get(id).max_marks || 1), 0);
+  const selected = pool.slice(0, count);
+  const totalMax = selected.reduce((sum, q) => sum + (Number(q.max_marks) || 1), 0);
+  let stage = 'validate';
 
   try {
-  db.transaction(() => {
-    db.prepare(
-      `INSERT INTO assessments
-        (id,name,description,active,archived,duration_minutes,link_expiry_minutes,
-         calc_max,written_max,interview_max,total_max,pass_threshold,eligibility_rules_id,
-         assessment_type,randomize_questions,questions_to_show,randomize_question_order,
-         randomize_options,created_by)
-       VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      assessmentId, assessmentName, 'Simple assessment', 1, 0, duration, linkExpiry,
-      totalMax, 0, 0, totalMax, passMark, 1, family === 'IQ' ? 'IQ_TEST' : 'GENERAL_ASSESSMENT',
-      family === 'IQ' ? 1 : 0, count, family === 'IQ' ? 1 : 0, family === 'IQ' ? 1 : 0, req.user.name
+    stage = 'assessment';
+    db.prepare(`INSERT INTO assessments
+      (id,name,description,active,archived,duration_minutes,link_expiry_minutes,
+       calc_max,written_max,interview_max,total_max,pass_threshold,eligibility_rules_id,
+       assessment_type,randomize_questions,questions_to_show,randomize_question_order,
+       randomize_options,created_by)
+      VALUES (?,?,?,1,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      assessmentId, assessmentName, 'Simple assessment', duration, linkExpiry,
+      totalMax, 0, 0, totalMax, passMark, 1,
+      family === 'IQ' ? 'IQ_TEST' : 'GENERAL_ASSESSMENT',
+      family === 'IQ' ? 1 : 0, count, family === 'IQ' ? 1 : 0, family === 'IQ' ? 1 : 0,
+      req.user.name
     );
+
+    stage = 'questions';
     const insertQ = db.prepare('INSERT INTO assessment_questions (assessment_id,question_id,order_index) VALUES (?,?,?)');
-    questionIds.forEach((qid, i) => insertQ.run(assessmentId, qid, i));
-    db.prepare(
-      `INSERT INTO candidates
-        (id,code,full_name,dob,phone,email,application_type,status,archived)
-       VALUES (?,?,?,'',NULL,NULL,'NORMAL','DRAFT',0)`
-    ).run(candidateId, code, 'Pending candidate');
-    db.prepare(
-      `INSERT INTO assessment_links
-        (id,token,candidate_id,assessment_id,status,expires_at,created_by,language,self_registration)
-       VALUES (?,?,?,?,'ACTIVE',?,?,'en',1)`
-    ).run(linkId, token, candidateId, assessmentId, expiresAt, req.user.name);
-  })();
+    selected.forEach((q, i) => insertQ.run(assessmentId, q.id, i));
 
+    stage = 'candidate';
+    db.prepare(`INSERT INTO candidates
+      (id,code,full_name,phone,email,application_type,status,archived)
+      VALUES (?,?,? ,NULL,NULL,'NORMAL','DRAFT',0)`).run(candidateId, code, 'Pending candidate');
+
+    stage = 'link';
+    db.prepare(`INSERT INTO assessment_links
+      (id,token,candidate_id,assessment_id,status,expires_at,created_by,language,self_registration)
+      VALUES (?,?,?,?,'ACTIVE',?,?,'en',1)`).run(
+      linkId, token, candidateId, assessmentId, expiresAt, req.user.name
+    );
+
+    try {
+      auditFromReq(req, 'SIMPLE_ASSESSMENT_LINK_CREATED', assessmentId, null,
+        { family, count, duration, linkExpiry, passMark });
+    } catch (auditError) {
+      console.error('[simple-link] audit failed:', auditError);
+    }
+
+    const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
+    const examPath = family === 'IQ' ? 'simple/iq' : 'simple/test';
+    return res.status(201).json({
+      assessmentId, linkId, token,
+      examUrl: `${baseUrl}/${examPath}/${token}`,
+      durationMinutes: duration, linkExpiryMinutes: linkExpiry,
+      passMark, questions: count
+    });
   } catch (e) {
-    console.error('[simple-link] failed to create candidate link:', e);
-    return res.status(500).json({ error: e && e.message ? e.message : 'Could not create candidate link.' });
+    console.error('[simple-link] stage=' + stage, e);
+    return res.status(500).json({
+      error: 'Link creation failed at ' + stage + ': ' + (e && e.message ? e.message : 'database error')
+    });
   }
-  try { auditFromReq(req, 'SIMPLE_ASSESSMENT_LINK_CREATED', assessmentId, null, { family, count, duration, linkExpiry, passMark }); } catch (e) { console.error('[simple-link] audit failed:', e); }
-  const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
-  const examPath = family === 'IQ' ? 'simple/iq' : 'simple/test';
-  res.status(201).json({
-    assessmentId, linkId, token, examUrl:`${baseUrl}/${examPath}/${token}`,
-    durationMinutes:duration, linkExpiryMinutes:linkExpiry, passMark, questions:count
-  });
 });
-
 router.get('/links', requireRole(...VIEWERS), (req, res) => {
   const rows = db.prepare(
     `SELECT l.id,l.token,l.status,l.created_at,l.expires_at,l.disabled_at,l.self_registration,
