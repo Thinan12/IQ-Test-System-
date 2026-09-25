@@ -289,7 +289,7 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
   })();
   auditFromReq(req, 'SIMPLE_ASSESSMENT_LINK_CREATED', assessmentId, null, { family, count, duration, linkExpiry, passMark });
   const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
-  const examPath = family === 'IQ' ? 'iq' : 'exam';
+  const examPath = family === 'IQ' ? 'simple/iq' : 'simple/test';
   res.status(201).json({
     assessmentId, linkId, token, examUrl:`${baseUrl}/${examPath}/${token}`,
     durationMinutes:duration, linkExpiryMinutes:linkExpiry, passMark, questions:count
