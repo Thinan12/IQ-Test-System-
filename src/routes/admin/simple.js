@@ -205,7 +205,7 @@ router.get('/summary', requireRole(...VIEWERS), (req, res) => {
     results: rows.map((r) => ({
       sessionId:r.session_id, candidateName:r.full_name, email:r.email, phone:r.phone, idNumber:r.id_number || '',
       assessmentName:r.assessment_name, marks:r.raw_score, maxMarks:r.raw_max,
-      percentage:r.percentage, pass:r.percentage >= Number(r.pass_threshold || 70),
+      percentage:r.percentage, pass:Number(r.raw_score || 0) >= Number(r.pass_threshold || 0),
       submittedAt:r.submitted_at, startedAt:r.started_at
     }))
   });
@@ -284,7 +284,7 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
     db.prepare(
       `INSERT INTO assessment_links
         (id,token,candidate_id,assessment_id,status,expires_at,created_by,language,self_registration)
-       VALUES (?,?,?,?, 'ACTIVE',?,?,?,'en',1)`
+       VALUES (?,?,?,?,'ACTIVE',?,?,'en',1)`
     ).run(linkId, token, candidateId, assessmentId, expiresAt, req.user.name);
   })();
   auditFromReq(req, 'SIMPLE_ASSESSMENT_LINK_CREATED', assessmentId, null, { family, count, duration, linkExpiry, passMark });
@@ -372,7 +372,7 @@ router.get('/results', requireRole(...VIEWERS), (req, res) => {
   res.json({ results: rows.map((r) => ({
     sessionId:r.session_id,name:r.full_name,email:r.email,phone:r.phone,idNumber:r.id_number || '',
     assessment:r.assessment_name,type:r.assessment_type,marks:r.marks || 0,maxMarks:r.max_marks || 0,
-    percentage:Number(r.percentage || 0),pass:r.percentage >= Number(r.pass_threshold || 0),
+    percentage:Number(r.percentage || 0),passMark:Number(r.pass_threshold || 0),pass:Number(r.marks || 0) >= Number(r.pass_threshold || 0),
     submittedAt:r.submitted_at
   })) });
 });
