@@ -8,6 +8,8 @@ const morgan = require('morgan');
 const { startExpirySweeper, finalizeExpiredSessions } = require('./lib/finalize');
 
 const app = express();
+// Simplified assessment workflow migrations are additive and safe for the existing database.
+require('./simpleMigration');
 app.set('trust proxy', 1); // needed for correct req.ip behind a reverse proxy (rate limiting, audit logs)
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -99,6 +101,8 @@ app.use('/api/admin/users', require('./routes/admin/users'));
 app.use('/api/admin/exam-control', require('./routes/admin/examControl'));
 app.use('/api/admin/assessments', require('./routes/admin/assessments'));
 app.use('/api/admin/iq', require('./routes/admin/iq'));
+app.use('/api/admin/simple', require('./routes/admin/simple'));
+app.use('/api/simple', require('./routes/simplePublic'));
 app.use('/api/admin/recruitment', require('./routes/admin/recruitment'));
 app.use('/api/admin', require('./routes/admin/misc'));
 app.use('/api/exam', require('./routes/exam'));
@@ -121,7 +125,12 @@ app.get('/exam/:token', (req, res) => res.sendFile(path.join(__dirname, '..', 'p
 // experience, with no way to confuse it with a recruitment assessment link.
 // The token is the same opaque random string and carries no candidate data.
 app.use('/iq', express.static(path.join(__dirname, '..', 'public', 'iq')));
+app.use('/simple', express.static(path.join(__dirname, '..', 'public', 'simple')));
+app.use('/simple-admin', express.static(path.join(__dirname, '..', 'public', 'simple-admin')));
 app.get('/iq/:token', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'iq', 'index.html')));
+app.get('/simple/iq/:token', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'simple', 'index.html')));
+app.get('/simple/test/:token', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'simple', 'index.html')));
+app.get('/simple-admin*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'simple-admin', 'index.html')));
 
 app.get('/', (req, res) => res.redirect('/admin'));
 
