@@ -268,7 +268,7 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
          calc_max,written_max,interview_max,total_max,pass_threshold,eligibility_rules_id,
          assessment_type,randomize_questions,questions_to_show,randomize_question_order,
          randomize_options,created_by)
-       VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       VALUES (?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       assessmentId, assessmentName, 'Simple assessment', 1, 0, duration, linkExpiry,
       totalMax, 0, 0, totalMax, passMark, 1, family === 'IQ' ? 'IQ_TEST' : 'GENERAL_ASSESSMENT',
@@ -449,7 +449,7 @@ router.get('/results.xlsx', requireRole(...VIEWERS), async (req,res) => {
   ];
   rows.forEach(r=>ws.addRow({name:r.full_name,email:r.email,phone:r.phone,id:r.id_number,assessment:r.assessment_name,type:r.assessment_type,
     marks:r.marks||0,max:r.max_marks||0,percentage:Number(r.percentage||0),passmark:r.pass_threshold||0,
-    result:Number(r.percentage||0)>=Number(r.pass_threshold||0)?'PASS':'FAIL',submitted:r.submitted_at||''}));
+    result:Number(r.marks||0)>=Number(r.pass_threshold||0)?'PASS':'FAIL',submitted:r.submitted_at||''}));
   ws.getRow(1).font={bold:true}; res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition','attachment; filename="LALCO_All_Results.xlsx"'); await wb.xlsx.write(res); res.end();
 });
