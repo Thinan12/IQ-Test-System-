@@ -136,13 +136,12 @@ function makeConfig(row, family) {
     pick(row, ['option c','c','option 3']),
     pick(row, ['option d','d','option 4']),
   ].filter(Boolean);
-  const labels = ['A','B','C','D'].slice(0, options.length);
+  const labels = options.slice();
   const correctRaw = pick(row, ['correct answer','answer','correct','correct option','answer key']);
-  let correct = correctRaw.toUpperCase();
-  if (!labels.includes(correct)) {
-    const idx = options.findIndex((o) => o.toLowerCase() === correctRaw.toLowerCase());
-    if (idx >= 0) correct = labels[idx];
-  }
+  let correct = correctRaw.trim();
+  const letter = correctRaw.trim().toUpperCase().match(/^[A-D]$/);
+  if (letter) correct = options[letter[0].charCodeAt(0) - 65] || '';
+  if (!labels.some((v) => v.toLowerCase() === correct.toLowerCase())) correct = '';
   const marks = Number(pick(row, ['points','marks','max marks','maxmarks'])) || 1;
   return {
     type: 'MCQ',
