@@ -1,6 +1,7 @@
 'use strict';
 
 const $ = (s) => document.querySelector(s);
+function base64(buffer) { let out=''; const bytes=new Uint8Array(buffer); for(let i=0;i<bytes.length;i+=0x8000) out+=String.fromCharCode(...bytes.subarray(i,i+0x8000)); return btoa(out); }
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
   '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
 }[c]));
@@ -279,7 +280,7 @@ async function render() {
           method:'POST',
           body:JSON.stringify({
             fileName:file.name,
-            dataBase64:btoa(String.fromCharCode(...new Uint8Array(buffer))),
+            dataBase64:base64(buffer),
             family:$('#family').value
           })
         });
