@@ -1,5 +1,6 @@
 'use strict';
-const $=s=>document.querySelector(s);\nfunction base64(buf){let s='';const a=new Uint8Array(buf);for(let i=0;i<a.length;i+=0x8000)s+=String.fromCharCode(...a.subarray(i,i+0x8000));return btoa(s)}const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=s=>document.querySelector(s);
+function base64(buf){let s='';const a=new Uint8Array(buf);for(let i=0;i<a.length;i+=0x8000)s+=String.fromCharCode(...a.subarray(i,i+0x8000));return btoa(s)}const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let auth=JSON.parse(localStorage.getItem('simple_admin_auth')||'null');
 async function api(path,opt={}){const h={'Content-Type':'application/json',...(opt.headers||{})};if(auth?.token)h.Authorization='Bearer '+auth.token;const r=await fetch('/api/admin/simple'+path,{...opt,headers:h});const d=await r.json().catch(()=>({}));if(!r.ok){if(r.status===401){auth=null;localStorage.removeItem('simple_admin_auth');return renderLogin()}throw new Error(d.error||'Request failed')}return d}
 function page(html){document.body.innerHTML='<main style="max-width:1100px;margin:0 auto;padding:24px 16px"><h1>LALCO Simple Assessment</h1>'+html+'</main>'}
