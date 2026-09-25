@@ -261,6 +261,7 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
     ? questionIds.reduce((sum, id) => sum + Number(db.prepare('SELECT max_marks FROM questions WHERE id=?').get(id).max_marks || 1), 0)
     : questionIds.reduce((sum, id) => sum + Number(db.prepare('SELECT max_marks FROM questions WHERE id=?').get(id).max_marks || 1), 0);
 
+  try {
   db.transaction(() => {
     db.prepare(
       `INSERT INTO assessments
@@ -287,6 +288,11 @@ router.post('/link', requireRole(...EDITORS), (req, res) => {
        VALUES (?,?,?,?,'ACTIVE',?,?,'en',1)`
     ).run(linkId, token, candidateId, assessmentId, expiresAt, req.user.name);
   })();
+
+  } catch (e) {
+    console.error('[simple-link] failed to create candidate link:', e);
+    return res.status(500).json({ error: e && e.message ? e.message : 'Could not create candidate link.' });
+  }
   auditFromReq(req, 'SIMPLE_ASSESSMENT_LINK_CREATED', assessmentId, null, { family, count, duration, linkExpiry, passMark });
   const baseUrl = process.env.PUBLIC_EXAM_BASE_URL || (req.protocol + '://' + req.get('host'));
   const examPath = family === 'IQ' ? 'simple/iq' : 'simple/test';
